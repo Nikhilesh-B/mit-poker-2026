@@ -44,6 +44,7 @@ def AnalyzeGame():
     sr1 = mean_win_p1/std_win_p1
     
     print(f'\n---- {P1} ----')
+    print(f'Final PnL: {P1_bankroll[-1]}')
     print(f'Mean PnL per Round: {mean_win_p1:.3f}')
     print(f'Std PnL per Round: {std_win_p1:.3f}')
     print(f'PnL Sharpe Ratio: {sr1:.3f}')
@@ -53,6 +54,7 @@ def AnalyzeGame():
     sr2 = mean_win_p2/std_win_p2
     
     print(f'\n---- {P2} ----')
+    print(f'Final PnL: {P2_bankroll[-1]}')
     print(f'Mean PnL per Round: {mean_win_p2:.3f}')
     print(f'Std PnL per Round: {std_win_p2:.3f}')
     print(f'PnL Sharpe Ratio: {sr2:.3f}')

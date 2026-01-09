@@ -13,7 +13,9 @@ BIG_BLIND = 2
 SMALL_BLIND = 1
 
 
-class RoundState(namedtuple('_RoundState', ['button', 'street', 'pips', 'stacks', 'hands', 'board', 'previous_state'])):
+class RoundState(namedtuple('_RoundState', 
+                            ['button', 'street', 'pips', 'stacks', 
+                             'hands', 'board', 'previous_state'])):
     '''
     Encodes the game tree for one round of poker.
     '''
@@ -56,7 +58,8 @@ class RoundState(namedtuple('_RoundState', ['button', 'street', 'pips', 'stacks'
 
         possible streets: 0, 2, 3, 4, 5, 6
         '''
-        ### Put the board as peek deck of the street number and make sure board includes this peek + the players discarded cards after state
+        ### Put the board as peek deck of the street number and make sure board 
+        # includes this peek + the players discarded cards after state
         if self.street == 6:
             return self.showdown()
         elif self.street == 0:

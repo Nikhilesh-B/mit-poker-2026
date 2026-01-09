@@ -2,7 +2,7 @@
 # DO NOT REMOVE OR RENAME THIS FILE
 PLAYER_1_NAME = "A"
 # Change this to './player_chatbot' to interact with your own bot!
-PLAYER_1_PATH = "./python_skeleton"
+PLAYER_1_PATH = "./python_skeleton_OG"
 # NO TRAILING SLASHES ARE ALLOWED IN PATHS
 PLAYER_2_NAME = "Nikhilesh Belulkar"
 PLAYER_2_PATH = "./python_skeleton_vNB"

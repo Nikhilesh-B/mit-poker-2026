@@ -25,6 +25,8 @@ class Player(Bot):
         Returns:
         Nothing.
         '''
+        x = 3
+
         pass
 
     def handle_new_round(self, game_state, round_state, active):
@@ -101,12 +103,7 @@ class Player(Bot):
         # Only use DiscardAction if it's in legal_actions (which already checks street)
         # legal_actions() returns DiscardAction only when street is 2 or 3
         if DiscardAction in legal_actions:
-            # Discard the weakest card (by rank) in our hand
-            if len(my_cards) > 0:
-                rank_order = {r: i for i, r in enumerate("23456789TJQKA")}
-                weakest_idx = min(
-                    range(len(my_cards)), key=lambda i: rank_order.get(my_cards[i][0], -1))
-                return DiscardAction(weakest_idx)
+                return DiscardAction(0)
         if RaiseAction in legal_actions:
             # the smallest and largest numbers of chips for a legal bet/raise
             min_raise, max_raise = round_state.raise_bounds()

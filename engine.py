@@ -2,6 +2,7 @@
 6.9630 MIT POKERBOTS GAME ENGINE
 DO NOT REMOVE, RENAME, OR EDIT THIS FILE
 '''
+from config import *
 from collections import namedtuple
 from threading import Thread
 from queue import Queue
@@ -10,14 +11,16 @@ import math
 import json
 import subprocess
 import socket
-import pkrbot ###import eval7, but better
+import pkrbot  # import eval7, but better
 import sys
 import os
 import random
+from datetime import datetime
+from pathlib import Path
+from plot_gamelogs import generate_plot_for_log, sanitize_for_filename
 
 sys.path.append(os.getcwd())
-from config import *
-###New action for discarding a card from your hand and adding it to the board
+# New action for discarding a card from your hand and adding it to the board
 DiscardAction = namedtuple('DiscardAction', ['card'])
 
 FoldAction = namedtuple('FoldAction', [])
@@ -29,11 +32,20 @@ RaiseAction = namedtuple('RaiseAction', ['amount'])
 TerminalState = namedtuple('TerminalState', ['deltas', 'previous_state'])
 
 STREET_NAMES = ['Flop', 'Discard 1', 'Discard 2', 'Turn', 'River']
-DECODE = {'F': FoldAction, 'C': CallAction, 'K': CheckAction, 'R': RaiseAction, 'D': DiscardAction}
-CCARDS = lambda cards: ','.join(map(str, cards))
-PCARDS = lambda cards: '[{}]'.format(' '.join(map(str, cards))) ### Changed from PCARDS = lambda cards: '[{}]'.format(' '.join(map(str, cards)))
-PVALUE = lambda name, value: ', {} ({})'.format(name, value)
-STATUS = lambda players: ''.join([PVALUE(p.name, p.bankroll) for p in players])
+DECODE = {'F': FoldAction, 'C': CallAction,
+          'K': CheckAction, 'R': RaiseAction, 'D': DiscardAction}
+
+
+def CCARDS(cards): return ','.join(map(str, cards))
+
+
+# Changed from PCARDS = lambda cards: '[{}]'.format(' '.join(map(str, cards)))
+def PCARDS(cards): return '[{}]'.format(' '.join(map(str, cards)))
+def PVALUE(name, value): return ', {} ({})'.format(name, value)
+
+
+def STATUS(players): return ''.join(
+    [PVALUE(p.name, p.bankroll) for p in players])
 
 # Socket encoding scheme:
 #
@@ -76,7 +88,8 @@ class RoundState(namedtuple('_RoundState', ['button', 'street', 'pips', 'stacks'
         delta = 0
         if winner_index == 2:
             # Case of split pots
-            assert(self.stacks[0] == self.stacks[1]) # split pots only happen on the river + equal stacks
+            # split pots only happen on the river + equal stacks
+            assert (self.stacks[0] == self.stacks[1])
             delta = 0
         else:
             # Case of one player winning
@@ -87,7 +100,8 @@ class RoundState(namedtuple('_RoundState', ['button', 'street', 'pips', 'stacks'
 
         # if delta is not an integer, round it down or up depending on who's in position
         if abs(delta - math.floor(delta)) > 1e-6:
-            delta = math.floor(delta) if self.button % 2 == 0 else math.ceil(delta)
+            delta = math.floor(
+                delta) if self.button % 2 == 0 else math.ceil(delta)
         return int(delta)
 
     def showdown(self) -> TerminalState:
@@ -103,14 +117,14 @@ class RoundState(namedtuple('_RoundState', ['button', 'street', 'pips', 'stacks'
             TerminalState: A terminal state object containing:
                 - List of deltas (positive for winner, negative for loser)
                 - Reference to the previous game state
-        
+
         Note:
             This method assumes both players have equal stacks when reaching showdown,
             which is enforced by an assertion.
         '''
         score0 = pkrbot.evaluate(self.board + self.hands[0])
         score1 = pkrbot.evaluate(self.board + self.hands[1])
-        assert(self.stacks[0] == self.stacks[1])
+        assert (self.stacks[0] == self.stacks[1])
         if score0 > score1:
             delta = self.get_delta(0)
         elif score0 < score1:
@@ -118,7 +132,7 @@ class RoundState(namedtuple('_RoundState', ['button', 'street', 'pips', 'stacks'
         else:
             # split the pot
             delta = self.get_delta(2)
-        
+
         return TerminalState([int(delta), -int(delta)], self)
 
     def legal_actions(self):
@@ -135,7 +149,8 @@ class RoundState(namedtuple('_RoundState', ['button', 'street', 'pips', 'stacks'
             return {CheckAction, FoldAction} if bets_forbidden else {CheckAction, RaiseAction, FoldAction}
         # continue_cost > 0
         # similarly, re-raising is only allowed if both players can afford it
-        raises_forbidden = (continue_cost == self.stacks[active] or self.stacks[1-active] == 0)
+        raises_forbidden = (
+            continue_cost == self.stacks[active] or self.stacks[1-active] == 0)
         return {FoldAction, CallAction} if raises_forbidden else {FoldAction, CallAction, RaiseAction}
 
     def raise_bounds(self):
@@ -144,8 +159,10 @@ class RoundState(namedtuple('_RoundState', ['button', 'street', 'pips', 'stacks'
         '''
         active = self.button % 2
         continue_cost = self.pips[1-active] - self.pips[active]
-        max_contribution = min(self.stacks[active], self.stacks[1-active] + continue_cost)
-        min_contribution = min(max_contribution, continue_cost + max(continue_cost, BIG_BLIND))
+        max_contribution = min(
+            self.stacks[active], self.stacks[1-active] + continue_cost)
+        min_contribution = min(
+            max_contribution, continue_cost + max(continue_cost, BIG_BLIND))
         return (self.pips[active] + min_contribution, self.pips[active] + max_contribution)
 
     def proceed_street(self):
@@ -154,19 +171,19 @@ class RoundState(namedtuple('_RoundState', ['button', 'street', 'pips', 'stacks'
 
         possible streets: 0, 2, 3, 4, 5, 6
         '''
-        ### Put the board as peek deck of the street number and make sure board includes this peek + the players discarded cards after state
+        # Put the board as peek deck of the street number and make sure board includes this peek + the players discarded cards after state
         if self.street == 6:
             return self.showdown()
         elif self.street == 0:
             new_street = 2
-            button = 1 ### Player B discards first, since they are out of position
+            button = 1  # Player B discards first, since they are out of position
             self.board.extend(self.deck.peek(new_street))
         elif self.street == 2:
             new_street = 3
-            button = 0 ### Player A discards second
+            button = 0  # Player A discards second
         elif self.street == 3:
             new_street = 4
-            button = 1 ### Player B acts first after the discard phase
+            button = 1  # Player B acts first after the discard phase
         else:
             new_street = self.street + 1
             button = 1
@@ -203,21 +220,24 @@ class RoundState(namedtuple('_RoundState', ['button', 'street', 'pips', 'stacks'
         if isinstance(action, DiscardAction):
             if len(self.hands[active]) != 0:
                 self.board.append(self.hands[active].pop(action.card))
-            state = RoundState((1 - active) % 2, self.street, self.pips, self.stacks, self.hands, self.deck, self.board, self)
+            state = RoundState((1 - active) % 2, self.street, self.pips,
+                               self.stacks, self.hands, self.deck, self.board, self)
             return state
         if isinstance(action, FoldAction):
-            delta = self.get_delta((1 - active) % 2) # if active folds, the other player (1 - active) wins
+            # if active folds, the other player (1 - active) wins
+            delta = self.get_delta((1 - active) % 2)
             return TerminalState([delta, -delta], self)
         if isinstance(action, CallAction):
             if self.button == 0:  # sb calls bb
-                return RoundState(1, 0, [BIG_BLIND] * 2, [STARTING_STACK - BIG_BLIND] * 2, self.hands, self.deck, self.board,self)
+                return RoundState(1, 0, [BIG_BLIND] * 2, [STARTING_STACK - BIG_BLIND] * 2, self.hands, self.deck, self.board, self)
             # both players acted
             new_pips = list(self.pips)
             new_stacks = list(self.stacks)
             contribution = new_pips[1-active] - new_pips[active]
             new_stacks[active] -= contribution
             new_pips[active] += contribution
-            state = RoundState(self.button + 1, self.street, new_pips, new_stacks, self.hands, self.deck, self.board, self)
+            state = RoundState(self.button + 1, self.street, new_pips,
+                               new_stacks, self.hands, self.deck, self.board, self)
             return state.proceed_street()
         if isinstance(action, CheckAction):
             if (self.street == 0 and self.button > 0) or self.button > 1 or self.street == 2 or self.street == 3:  # both players acted
@@ -287,7 +307,8 @@ class Player():
         '''
         if self.commands is not None and len(self.commands['run']) > 0:
             try:
-                server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                server_socket = socket.socket(
+                    socket.AF_INET, socket.SOCK_STREAM)
                 with server_socket:
                     server_socket.bind(('', 0))
                     server_socket.settimeout(CONNECT_TIMEOUT)
@@ -298,6 +319,7 @@ class Player():
                                             cwd=self.path)
                     self.bot_subprocess = proc
                     # function for bot listening
+
                     def enqueue_output(out, queue):
                         try:
                             for line in out:
@@ -308,7 +330,8 @@ class Player():
                         except ValueError:
                             pass
                     # start a separate bot listening thread which dies with the program
-                    Thread(target=enqueue_output, args=(proc.stdout, self.bytes_queue), daemon=True).start()
+                    Thread(target=enqueue_output, args=(
+                        proc.stdout, self.bytes_queue), daemon=True).start()
                     # block until we timeout or the player connects
                     client_socket, _ = server_socket.accept()
                     with client_socket:
@@ -341,9 +364,11 @@ class Player():
         if self.bot_subprocess is not None:
             try:
                 if self.path == r"./player_chatbot":
-                    outs, _ = self.bot_subprocess.communicate(timeout=PLAYER_TIMEOUT)
+                    outs, _ = self.bot_subprocess.communicate(
+                        timeout=PLAYER_TIMEOUT)
                 else:
-                    outs, _ = self.bot_subprocess.communicate(timeout=CONNECT_TIMEOUT)
+                    outs, _ = self.bot_subprocess.communicate(
+                        timeout=CONNECT_TIMEOUT)
                 self.bytes_queue.put(outs)
             except subprocess.TimeoutExpired:
                 print('Timed out waiting for', self.name, 'to quit')
@@ -386,7 +411,8 @@ class Player():
             - Bot disconnections or timeouts result in game clock being set to 0
             - At the end of a round, only CheckAction is considered legal
         '''
-        legal_actions = round_state.legal_actions() if isinstance(round_state, RoundState) else {CheckAction}
+        legal_actions = round_state.legal_actions() if isinstance(
+            round_state, RoundState) else {CheckAction}
         if self.socketfile is not None and self.game_clock > 0.:
             clause = ''
             try:
@@ -414,7 +440,8 @@ class Player():
                         if 0 <= card <= 2:
                             return action(card)
                         else:
-                            game_log.append(f"{self.name} attempted to discard invalid index {card}")
+                            game_log.append(
+                                f"{self.name} attempted to discard invalid index {card}")
                             # Invalid index - fall through to default action handling
                         ###### index the player's hand 'D0', 'D1', or 'D2' ######
                     else:
@@ -422,7 +449,8 @@ class Player():
                 else:
                     # Action is not in legal_actions
                     game_log.append(f"street = {round_state.street}")
-                    game_log.append(self.name + ' attempted illegal ' + action.__name__)
+                    game_log.append(
+                        self.name + ' attempted illegal ' + action.__name__)
             except socket.timeout:
                 error_message = self.name + ' ran out of time'
                 game_log.append(error_message)
@@ -434,7 +462,8 @@ class Player():
                 print(error_message)
                 self.game_clock = 0.
             except (IndexError, KeyError, ValueError):
-                game_log.append(self.name + ' response misformatted: ' + str(clause))
+                game_log.append(
+                    self.name + ' response misformatted: ' + str(clause))
         return CheckAction() if CheckAction in legal_actions else FoldAction()
 
 
@@ -444,7 +473,8 @@ class Game():
     '''
 
     def __init__(self):
-        self.log = ['6.9630 MIT Pokerbots - ' + PLAYER_1_NAME + ' vs ' + PLAYER_2_NAME]
+        self.log = ['6.9630 MIT Pokerbots - ' +
+                    PLAYER_1_NAME + ' vs ' + PLAYER_2_NAME]
         self.player_messages = [[], []]
         self.preflop_bets = {PLAYER_1_NAME: 0, PLAYER_2_NAME: 0}
         self.flop_bets = {PLAYER_1_NAME: 0, PLAYER_2_NAME: 0}
@@ -459,28 +489,34 @@ class Game():
         '''
         if round_state.street == 0:
             self.preflop_bets = {players[0].name: STARTING_STACK-round_state.stacks[0],
-                                     players[1].name: STARTING_STACK-round_state.stacks[1]}
+                                 players[1].name: STARTING_STACK-round_state.stacks[1]}
         elif round_state.street == 4:
             self.flop_bets = {players[0].name: STARTING_STACK-round_state.stacks[0]-self.preflop_bets[players[0].name],
-                                players[1].name: STARTING_STACK-round_state.stacks[1]-self.preflop_bets[players[1].name]}
+                              players[1].name: STARTING_STACK-round_state.stacks[1]-self.preflop_bets[players[1].name]}
         else:
             self.turn_bets = {players[0].name: STARTING_STACK-round_state.stacks[0]-self.flop_bets[players[0].name]-self.preflop_bets[players[0].name],
-                                players[1].name: STARTING_STACK-round_state.stacks[1]-self.flop_bets[players[1].name]-self.preflop_bets[players[1].name]}
-            
-        
+                              players[1].name: STARTING_STACK-round_state.stacks[1]-self.flop_bets[players[1].name]-self.preflop_bets[players[1].name]}
+
         if round_state.street == 0 and round_state.button == 0:
-            self.log.append('{} posts the blind of {}'.format(players[0].name, SMALL_BLIND))
-            self.log.append('{} posts the blind of {}'.format(players[1].name, BIG_BLIND))
-            self.log.append('{} dealt {}'.format(players[0].name, PCARDS(round_state.hands[0])))
-            self.log.append('{} dealt {}'.format(players[1].name, PCARDS(round_state.hands[1])))
-            self.player_messages[0] = ['T0.', 'P0', 'H' + CCARDS(round_state.hands[0]), 'G']
-            self.player_messages[1] = ['T0.', 'P1', 'H' + CCARDS(round_state.hands[1]), 'G']
+            self.log.append('{} posts the blind of {}'.format(
+                players[0].name, SMALL_BLIND))
+            self.log.append('{} posts the blind of {}'.format(
+                players[1].name, BIG_BLIND))
+            self.log.append('{} dealt {}'.format(
+                players[0].name, PCARDS(round_state.hands[0])))
+            self.log.append('{} dealt {}'.format(
+                players[1].name, PCARDS(round_state.hands[1])))
+            self.player_messages[0] = ['T0.', 'P0',
+                                       'H' + CCARDS(round_state.hands[0]), 'G']
+            self.player_messages[1] = ['T0.', 'P1',
+                                       'H' + CCARDS(round_state.hands[1]), 'G']
         elif (round_state.street > 0 and round_state.street != 3 and round_state.button == 1) or (round_state.street == 3 and round_state.button == 0):
             board = round_state.board
             self.log.append(STREET_NAMES[round_state.street - 2] + ' ' + PCARDS(board) +
                             PVALUE(players[0].name, STARTING_STACK-round_state.stacks[0]) +
                             PVALUE(players[1].name, STARTING_STACK-round_state.stacks[1]))
-            self.log.append(f"Current stacks: {round_state.stacks[0]}, {round_state.stacks[1]}")
+            self.log.append(
+                f"Current stacks: {round_state.stacks[0]}, {round_state.stacks[1]}")
             compressed_board = 'B' + CCARDS(board)
             self.player_messages[0].append(compressed_board)
             self.player_messages[1].append(compressed_board)
@@ -502,7 +538,8 @@ class Game():
             phrasing = ' discards ' + str(hand[action.card])
             code = 'D' + str(action.card)
         else:  # isinstance(action, RaiseAction)
-            phrasing = (' bets ' if bet_override else ' raises to ') + str(action.amount)
+            phrasing = (' bets ' if bet_override else ' raises to ') + \
+                str(action.amount)
             code = 'R' + str(action.amount)
         self.log.append(name + phrasing)
         self.player_messages[0].append(code)
@@ -514,12 +551,18 @@ class Game():
         '''
         previous_state = round_state.previous_state
         if not self.log[-1].endswith(' folds'):
-            self.log.append('{} shows {}'.format(players[0].name, PCARDS(previous_state.hands[0])))
-            self.log.append('{} shows {}'.format(players[1].name, PCARDS(previous_state.hands[1])))
-            self.player_messages[0].append('O' + CCARDS(previous_state.hands[1]))
-            self.player_messages[1].append('O' + CCARDS(previous_state.hands[0]))
-        self.log.append('{} awarded {}'.format(players[0].name, round_state.deltas[0]))
-        self.log.append('{} awarded {}'.format(players[1].name, round_state.deltas[1]))
+            self.log.append('{} shows {}'.format(
+                players[0].name, PCARDS(previous_state.hands[0])))
+            self.log.append('{} shows {}'.format(
+                players[1].name, PCARDS(previous_state.hands[1])))
+            self.player_messages[0].append(
+                'O' + CCARDS(previous_state.hands[1]))
+            self.player_messages[1].append(
+                'O' + CCARDS(previous_state.hands[0]))
+        self.log.append('{} awarded {}'.format(
+            players[0].name, round_state.deltas[0]))
+        self.log.append('{} awarded {}'.format(
+            players[1].name, round_state.deltas[1]))
         self.player_messages[0].append('A' + str(round_state.deltas[0]))
         self.player_messages[1].append('A' + str(round_state.deltas[1]))
 
@@ -538,16 +581,22 @@ class Game():
             self.log_round_state(players, round_state)
             active = round_state.button % 2
             player = players[active]
-            action = player.query(round_state, self.player_messages[active], self.log)
+            action = player.query(
+                round_state, self.player_messages[active], self.log)
             bet_override = (round_state.pips == [0, 0])
-            self.log_action(player.name, action, bet_override, round_state.hands[active])
+            self.log_action(player.name, action, bet_override,
+                            round_state.hands[active])
             round_state = round_state.proceed(action)
         self.log_terminal_state(players, round_state)
         for i in range(len(players)):
-            multiplier = 1 if round_state.deltas[i] > 0 else (0 if round_state.deltas[i] == 0 else -1)
-            self.ev_preflop_bets[players[i].name] += multiplier * self.preflop_bets[players[i].name]
-            self.ev_flop_bets[players[i].name] += multiplier * self.flop_bets[players[i].name]
-            self.ev_turn_bets[players[i].name] += multiplier * self.turn_bets[players[i].name]
+            multiplier = 1 if round_state.deltas[i] > 0 else (
+                0 if round_state.deltas[i] == 0 else -1)
+            self.ev_preflop_bets[players[i].name] += multiplier * \
+                self.preflop_bets[players[i].name]
+            self.ev_flop_bets[players[i].name] += multiplier * \
+                self.flop_bets[players[i].name]
+            self.ev_turn_bets[players[i].name] += multiplier * \
+                self.turn_bets[players[i].name]
         for player, player_message, delta in zip(players, self.player_messages, round_state.deltas):
             player.query(round_state, player_message, self.log)
             player.bankroll += delta
@@ -576,19 +625,39 @@ class Game():
             self.log.append('Round #' + str(round_num) + STATUS(players))
             self.run_round(players)
             players = players[::-1]
-            
+
         self.log.append('')
         self.log.append('Final' + STATUS(players))
-        
+
         for player in players:
-            self.log.append('{} preflop bets EV: {}'.format(player.name, self.ev_preflop_bets[player.name]))
-            self.log.append('{} flop bets EV: {}'.format(player.name, self.ev_flop_bets[player.name]))
-            self.log.append('{} turn bets EV: {}'.format(player.name, self.ev_turn_bets[player.name]))
+            self.log.append('{} preflop bets EV: {}'.format(
+                player.name, self.ev_preflop_bets[player.name]))
+            self.log.append('{} flop bets EV: {}'.format(
+                player.name, self.ev_flop_bets[player.name]))
+            self.log.append('{} turn bets EV: {}'.format(
+                player.name, self.ev_turn_bets[player.name]))
             player.stop()
-        name = GAME_LOG_FILENAME + '.txt'
-        print('Writing', name)
-        with open(name, 'w') as log_file:
+        timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+        p1_safe = sanitize_for_filename(PLAYER_1_NAME)
+        p2_safe = sanitize_for_filename(PLAYER_2_NAME)
+        folder_name = f"{timestamp}_{p1_safe}_vs_{p2_safe}"
+        output_dir = Path(GAME_LOG_DIR) / folder_name
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        log_path = output_dir / f"{GAME_LOG_FILENAME}.txt"
+        print('Writing', log_path)
+        with open(log_path, 'w') as log_file:
             log_file.write('\n'.join(self.log))
+        try:
+            plots = generate_plot_for_log(
+                log_path,
+                output_dir=output_dir,
+                formats=["png", "pdf"],
+            )
+            for plot in plots:
+                print('Wrote plot', plot)
+        except Exception as exc:
+            print('Plot generation failed:', exc)
 
 
 if __name__ == '__main__':

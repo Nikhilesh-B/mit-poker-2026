@@ -2,13 +2,9 @@
 
 from skeleton.actions import FoldAction, CallAction, CheckAction, \
 RaiseAction, DiscardAction
-from skeleton.states import GameState, TerminalState, RoundState
-from skeleton.states import NUM_ROUNDS, STARTING_STACK, BIG_BLIND, SMALL_BLIND
 
 import poker_utils
 from poker_utils import RANK_MAP, SUIT_MAP
-
-import random
 
 
 class MyBot():
@@ -38,8 +34,10 @@ class MyBot():
             my_cards, board_cards)
         score = poker_utils.poker_hand_scorer(my_cards, board_cards)
         
+        print({0:'SB', 1:'BB'}[active])
         print(my_cards, board_cards, round(score, 3))
         print(poker_hands)
+        print(legal_actions)
         
         # Street is number of cards on the board.
         # When not discarding at street 2 or 3, 
@@ -71,13 +69,18 @@ class MyBot():
                 raise_amt = round(min_raise+(max_raise-min_raise)*multi)
                 print(min_raise, max_raise, raise_amt)
                 return RaiseAction(raise_amt)
-            
-        # return legal_actions[0]
-        return CallAction()
+        
+        # They distinguish between check and call.
+        # If the opponent has not raised, 'Call' is illegal, need 'Check'.
+        if CheckAction in legal_actions:
+            return CheckAction()
+        else:
+            return CallAction()
     
     
     def discard_chooser(self, hand_cards, board_cards):
         # TODO: Currently discards the minimum.
+        # Also check pair, flush, straight etc.
         min_rank, min_loc = 15, -1
         
         for i, (r, s) in enumerate(hand_cards):
@@ -86,6 +89,7 @@ class MyBot():
                 min_rank = r
                 
         print(min_loc, min_rank)
+        print('Now ret disc 1')
                 
         return min_loc
             

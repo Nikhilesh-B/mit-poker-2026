@@ -1,0 +1,5 @@
+OPPONENT_PATH = r"C:\Users\DELL\Desktop\MIT MFin\3_IAP_2026\6.9630\mit-poker-2026\python_skeleton\player.py"
+NUM_ROUNDS = 1000
+STARTING_STACK = 400
+BIG_BLIND = 2
+SMALL_BLIND = 1

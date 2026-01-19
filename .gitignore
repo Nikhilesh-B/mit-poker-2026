@@ -9,3 +9,7 @@ gamelog.txt
 build/
 .vscode/
 gamelogs/
+*.pt
+*.zip
+*.log
+*.txt

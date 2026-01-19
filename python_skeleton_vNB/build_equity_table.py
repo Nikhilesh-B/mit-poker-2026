@@ -144,7 +144,7 @@ def main():
                         help="optional cap on canonical hands (0 = all canonical)")
     parser.add_argument("--board-samples", type=int, default=0,
                         help="optional cap on canonical boards (0 = all canonical at this size)")
-    parser.add_argument("--trials", type=int, default=2,
+    parser.add_argument("--trials", type=int, default=40,
                         help="MC trials per state")
     parser.add_argument("--seed", type=int, default=7, help="RNG seed")
     parser.add_argument("--output", type=str, default=None,

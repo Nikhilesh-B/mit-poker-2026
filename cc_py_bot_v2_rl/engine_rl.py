@@ -1,29 +1,28 @@
 '''
-6.9630 MIT POKERBOTS GAME ENGINE for RL Training
+6.9630 MIT Pokerbots Game Engine for RL Training
 '''
 
 from collections import namedtuple
 import math
 
 import pkrbot
-import sys
-import os
 
+import sys, os
 sys.path.append(os.getcwd())
+
 from config_rl import NUM_ROUNDS, STARTING_STACK, BIG_BLIND, SMALL_BLIND
-
-
-DiscardAction = namedtuple('DiscardAction', ['card'])
 
 FoldAction = namedtuple('FoldAction', [])
 CallAction = namedtuple('CallAction', [])
 CheckAction = namedtuple('CheckAction', [])
 RaiseAction = namedtuple('RaiseAction', ['amount'])
+DiscardAction = namedtuple('DiscardAction', ['card'])
 
 TerminalState = namedtuple('TerminalState', ['deltas', 'previous_state'])
-
 GameState = namedtuple('GameState', ['bankroll', 'game_clock', 'round_num'])
 
+
+# Active: BB: 1, SB: 0
 
 class RoundState(namedtuple('_RoundState', 
                             ['button', 'street', 'pips', 'stacks', 
@@ -43,7 +42,6 @@ class RoundState(namedtuple('_RoundState',
                 delta = STARTING_STACK - self.stacks[1]
             else:
                 delta = self.stacks[0] - STARTING_STACK
-
         if abs(delta - math.floor(delta)) > 1e-6:
             delta = math.floor(delta) if self.button % 2 == 0 else math.ceil(
                 delta)
@@ -109,43 +107,61 @@ class RoundState(namedtuple('_RoundState',
                           self.deck, self.board, self)
 
     def proceed(self, action):
+        # Only Double-Check and Call increases street.
         active = self.button % 2
+        
         if isinstance(action, DiscardAction):
             if len(self.hands[active]) != 0:
                 self.board.append(self.hands[active].pop(action.card))
+            # Button changes, reset to [0, 1].
             state = RoundState((1 - active) % 2, self.street, 
                                self.pips, self.stacks, self.hands, 
                                self.deck, self.board, self)
             return state
+        
         if isinstance(action, FoldAction):
+            # Round ends.
             delta = self.get_delta((1 - active) % 2)
             return TerminalState([delta, -delta], self)
+        
         if isinstance(action, CallAction):
+            # SB called BB. Button changes.
             if self.button == 0:
                 return RoundState(1, 0, [BIG_BLIND] * 2, [
                     STARTING_STACK - BIG_BLIND] * 2, self.hands, 
                     self.deck, self.board,self)
+            
+            # BB call or 3-raise etc.
             new_pips = list(self.pips)
             new_stacks = list(self.stacks)
             contribution = new_pips[1-active] - new_pips[active]
             new_stacks[active] -= contribution
             new_pips[active] += contribution
+            
+            # Button changes.
             state = RoundState(self.button + 1, self.street, new_pips, 
                                new_stacks, self.hands, self.deck, 
                                self.board, self)
+            
             return state.proceed_street()
+        
         if isinstance(action, CheckAction):
             if (self.street == 0 and self.button > 0
                 ) or self.button > 1 or self.street == 2 or self.street == 3:
                 return self.proceed_street()
+            # Button increased.
             return RoundState(self.button + 1, self.street, self.pips, 
                               self.stacks, self.hands, self.deck, 
                               self.board, self)
+        
+        # The remaining action here is for RaiseAction.
         new_pips = list(self.pips)
         new_stacks = list(self.stacks)
         contribution = action.amount - new_pips[active]
         new_stacks[active] -= contribution
         new_pips[active] += contribution
+        
+        # Button changes.
         return RoundState(self.button + 1, self.street, new_pips, 
                           new_stacks, self.hands, self.deck, self.board, self)
 
@@ -155,70 +171,109 @@ class Game():
         # P1 is the Opponent Bot: Bot that RL is training against.
         self.P1 = P1
         
-        self.current_round = 0
-        
         self.P1_bankroll = 0
         self.P2_bankroll = 0
         
+        self.current_round = 0
     
-    def send_round_state(self, round_state):
-        return round_state
     
-    def get_action_response(self, func):
-        return 
-    
-    def run_round(self, round_num):
-        '''
-        Runs one round of poker.
-        '''
-        
-        self.P1.handle_new_round()
-        
+    def start_new_round(self):
+        if self.current_round % 2 == 0:
+            self.sb = 'oppo'
+        else:
+            self.sb = 'rl'
+            
         deck = pkrbot.Deck()
         deck.shuffle()
         hands = [deck.deal(3), deck.deal(3)]
         board = []
+        pips = [SMALL_BLIND, BIG_BLIND]
+        stacks = [STARTING_STACK - SMALL_BLIND, STARTING_STACK - BIG_BLIND]
         
-        button = round_num % 2
+        round_state = RoundState(0, 0, pips, stacks, hands, deck, board, None)
+            # button, street, pips, stacks, hands, deck, board, previous_state
+        self.current_round_state = round_state
         
-        if button == 0:
-            pips = [SMALL_BLIND, BIG_BLIND]
-            stacks = [STARTING_STACK - SMALL_BLIND, 
-                      STARTING_STACK - BIG_BLIND]
+        
+        # Opponent Handle New Round
+        oppo_active_no = self.current_round % 2
+        self.P1.handle_new_round(GameState(self.P1_bankroll, 120, 
+                                           self.current_round), 
+                                 self.current_round_state, oppo_active_no)
+    
+    def end_round(self, round_state):
+        if self.sb == 'oppo':
+            self.P1_bankroll += round_state.deltas[0]
+            self.P2_bankroll += round_state.deltas[1]
         else:
-            pips = [BIG_BLIND, SMALL_BLIND]
-            stacks = [STARTING_STACK - BIG_BLIND, 
-                      STARTING_STACK - SMALL_BLIND]
+            self.P1_bankroll += round_state.deltas[1]
+            self.P2_bankroll += round_state.deltas[0]
         
-        round_state = RoundState(button, 0, pips, stacks, 
-                                 hands, deck, board, None)
+        # Opponent Handle Round Over
+        oppo_active_no = self.current_round % 2
+        self.P1.handle_round_over(GameState(self.P1_bankroll, 120,
+                                            self.current_round), 
+                                  self.current_round_state, oppo_active_no)
         
-        # TODO: I think this needs to not be a loop.
-        # But something that steps in time.
-        while not isinstance(round_state, TerminalState):
-            active = round_state.button % 2
-            
+        self.current_round += 1
+    
+    
+    def move_game_forward(self):
+        if self.check_round_over():
+            return -1
+        
+        # This is always true.
+        active = self.current_round_state.button % 2
+        
+        # SB is opponent.
+        if self.sb == 'oppo':
+            # SB's turn.
             if active == 0:
-                gs = GameState(self.P1_bankroll, 120, round_num)
-                action = self.P1.get_action(gs, round_state, active)
+                self.process_opponent_action(active)
+                return 0
+            # BB's turn.
             else:
-                gs = GameState(self.P2_bankroll, 120, round_num)
-                # TODO: Need to get this from RL training thing.
-                action = self.P2.get_action(gs, round_state, active)
-            
-            round_state = round_state.proceed(action)
-        
-        self.P1_bankroll += round_state.deltas[0]
-        self.P2_bankroll += round_state.deltas[1]
-            
-        self.P1.handle_round_over()
-
-    def run(self):
-        '''
-        Runs one game of poker.
-        '''
-        for round_num in range(NUM_ROUNDS):
-            self.run_round(round_num)
+                # !!!: Call RL from gym here.
+                return 1
+        # SB is RL.
+        else:
+            # SB's turn.
+            if active == 0:
+                # !!!: Call RL from gym here.
+                return 1
+            # BB's turn.
+            else:
+                self.process_opponent_action(active)
+                return 0
+    
+    
+    def process_opponent_action(self, active):
+        gs = GameState(self.P1_bankroll, 120, self.current_round)
+        action = self.P1.get_action(gs, self.current_round_state, active)
+        self.current_round_state = self.current_round_state.proceed(action)
+    
+    
+    def process_rl_train_action(self, rl_agent_action):
+        self.current_round_state = self.current_round_state.proceed(
+            rl_agent_action)
+    
+    
+    def check_round_over(self):
+        if isinstance(self.current_round_state, TerminalState):
+            self.end_round(self.current_round_state)
+            return True
+        else:
+            return False
+    
+    def check_game_over(self):
+        if self.current_round >= NUM_ROUNDS:
+            return True
+        else:
+            return False
+    
+    
+    def get_round_state(self):
+        return self.current_round_state
 
 
 if __name__ == '__main__':

@@ -131,6 +131,16 @@ def evaluate_poker_hands(hand_cards, board_cards, MAX_CARDS=8):
                         break
     return result
 
+def evaluate_poker_hands_list(hand_cards, board_cards, MAX_CARDS=8):
+    res = evaluate_poker_hands(hand_cards, board_cards, MAX_CARDS)
+    keys_order = ['Pair', 'TwoPair', 'ThreeOfAKind',
+                  'Straight', 'Flush', 'FullHouse', 
+                  'FourOfAKind', 'StraightFlush']
+    res_list = []
+    for k in keys_order:
+        res_list.append(res[k])   
+    return res_list
+
 def poker_hand_scorer(hand_cards, board_cards):
     ''' Heuristic evaluator. '''
     

@@ -1,4 +1,5 @@
 from typing import List, Tuple
+import torch
 
 # Rank ordering for sorting (Ace is highest)
 RANK_ORDER = {'2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8,
@@ -67,3 +68,17 @@ class canon_cards():
     def get_hand_str(self):
         hand_str = ','.join(sorted(self.canonical_hand))
         return hand_str
+
+    def encode_card_int(self, card) -> int:
+        card_str = str(card)
+        rank, suit = card_str.split('s')
+        rank, suit = int(rank), int(suit)
+        return rank*10+suit
+
+    def get_canonical_hand_tensor(self) -> torch.tensor:
+        canonical_hand_tensor = [self.encode_card_int(c) for c in self.hand]
+        return torch.tensor(canonical_hand_tensor)
+
+    def get_canonical_board_tensor(self) -> torch.tensor:
+        canonical_board_tensor = [self.encode_card_int(c) for c in self.board]
+        return torch.tensor(canonical_board_tensor)

@@ -61,11 +61,11 @@ class canon_cards():
         removed_card = self.hand.pop(idx)
         self.canonical_board.append(removed_card)
 
-    def get_board_str(self):
+    def get_board_str(self) -> str:
         board_str = ','.join(sorted(self.canonical_board))
         return board_str
 
-    def get_hand_str(self):
+    def get_hand_str(self) -> str:
         hand_str = ','.join(sorted(self.canonical_hand))
         return hand_str
 
@@ -76,9 +76,11 @@ class canon_cards():
         return rank*10+suit
 
     def get_canonical_hand_tensor(self) -> torch.tensor:
-        canonical_hand_tensor = [self.encode_card_int(c) for c in self.hand]
+        canonical_hand_tensor = [
+            self.encode_card_int(c) for c in sorted(self.hand)]
         return torch.tensor(canonical_hand_tensor)
 
     def get_canonical_board_tensor(self) -> torch.tensor:
-        canonical_board_tensor = [self.encode_card_int(c) for c in self.board]
+        canonical_board_tensor = [
+            self.encode_card_int(c) for c in sorted(self.board)]
         return torch.tensor(canonical_board_tensor)

@@ -69,9 +69,11 @@ def STATUS(players): return ''.join(
 # Action history is sent once, including the player's actions
 
 
-class RoundState(namedtuple('_RoundState', ['button', 'street', 'pips', 'stacks', 'hands', 'deck', 'board', 'previous_state'])):
+class RoundState(namedtuple('_RoundState', ['button', 'street', 'pips', 'stacks', 'hands', 'deck', 'board', 'previous_state', 'action_taken'])):
     '''
     Encodes the game tree for one round of poker.
+
+    The action_taken field stores the action that led to this state (for efficient history tracking).
     '''
 
     def get_delta(self, winner_index: int) -> int:
@@ -193,7 +195,8 @@ class RoundState(namedtuple('_RoundState', ['button', 'street', 'pips', 'stacks'
             button = 1
             new_board.append(self.deck.peek(new_street - 1)[new_street - 2])
 
-        return RoundState(button, new_street, [0, 0], self.stacks, new_hands, self.deck, new_board, self)
+        # Mark street transitions with None (not a player action, but a game phase change)
+        return RoundState(button, new_street, [0, 0], self.stacks, new_hands, self.deck, new_board, self, None)
 
     def proceed(self, action):
         '''
@@ -232,7 +235,7 @@ class RoundState(namedtuple('_RoundState', ['button', 'street', 'pips', 'stacks'
 
             # Use the NEW copies, not the original references
             state = RoundState((1 - active) % 2, self.street, self.pips,
-                               self.stacks, new_hands, self.deck, new_board, self)
+                               self.stacks, new_hands, self.deck, new_board, self, action)
             return state
         if isinstance(action, FoldAction):
             # if active folds, the other player (1 - active) wins
@@ -240,7 +243,7 @@ class RoundState(namedtuple('_RoundState', ['button', 'street', 'pips', 'stacks'
             return TerminalState([delta, -delta], self)
         if isinstance(action, CallAction):
             if self.button == 0:  # sb calls bb
-                return RoundState(1, 0, [BIG_BLIND] * 2, [STARTING_STACK - BIG_BLIND] * 2, self.hands, self.deck, self.board, self)
+                return RoundState(1, 0, [BIG_BLIND] * 2, [STARTING_STACK - BIG_BLIND] * 2, self.hands, self.deck, self.board, self, action)
             # both players acted
             new_pips = list(self.pips)
             new_stacks = list(self.stacks)
@@ -248,20 +251,23 @@ class RoundState(namedtuple('_RoundState', ['button', 'street', 'pips', 'stacks'
             new_stacks[active] -= contribution
             new_pips[active] += contribution
             state = RoundState(self.button + 1, self.street, new_pips,
-                               new_stacks, self.hands, self.deck, self.board, self)
+                               new_stacks, self.hands, self.deck, self.board, self, action)
             return state.proceed_street()
         if isinstance(action, CheckAction):
             if (self.street == 0 and self.button > 0) or self.button > 1 or self.street == 2 or self.street == 3:  # both players acted
-                return self.proceed_street()
+                # Create intermediate state with CheckAction before proceeding to street
+                temp_state = RoundState(self.button + 1, self.street, self.pips,
+                                        self.stacks, self.hands, self.deck, self.board, self, action)
+                return temp_state.proceed_street()
             # let opponent act
-            return RoundState(self.button + 1, self.street, self.pips, self.stacks, self.hands, self.deck, self.board, self)
+            return RoundState(self.button + 1, self.street, self.pips, self.stacks, self.hands, self.deck, self.board, self, action)
         # isinstance(action, RaiseAction)
         new_pips = list(self.pips)
         new_stacks = list(self.stacks)
         contribution = action.amount - new_pips[active]
         new_stacks[active] -= contribution
         new_pips[active] += contribution
-        return RoundState(self.button + 1, self.street, new_pips, new_stacks, self.hands, self.deck, self.board, self)
+        return RoundState(self.button + 1, self.street, new_pips, new_stacks, self.hands, self.deck, self.board, self, action)
 
 
 class Player():
@@ -587,7 +593,8 @@ class Game():
         board = []
         pips = [SMALL_BLIND, BIG_BLIND]
         stacks = [STARTING_STACK - SMALL_BLIND, STARTING_STACK - BIG_BLIND]
-        round_state = RoundState(0, 0, pips, stacks, hands, deck, board, None)
+        round_state = RoundState(
+            0, 0, pips, stacks, hands, deck, board, None, None)
         while not isinstance(round_state, TerminalState):
             self.log_round_state(players, round_state)
             active = round_state.button % 2

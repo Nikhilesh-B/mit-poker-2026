@@ -31,34 +31,38 @@ class Player(Bot):
     def __init__(self):
         '''
         Called when a new game starts. Called exactly once.
-        Loads the trained Deep CFR model.
+        Loads the best trained Deep CFR model (Epoch 16).
+        
+        Note: Tested ensemble averaging (multiple epochs) but single
+        Epoch 16 outperformed all ensembles. See ENSEMBLE_RESULTS.txt
         '''
         self.regret_net = None
         self.use_deep_cfr = False
 
         if DEEP_CFR_AVAILABLE:
-            # Try to load the trained model
+            # Load BEST SINGLE model: Epoch 16
+            # Tested ensembles (8,12,16) and (14,16,18) but they performed worse
+            # Epoch 16 is a unique peak: -430 chips vs Henry
             checkpoint_paths = [
-                Path("checkpoints/deep_cfr_final.pt"),
-                Path("Deep_CFR/checkpoints/deep_cfr_final.pt"),
-                Path("../checkpoints/deep_cfr_final.pt"),
+                Path("checkpoints/deep_cfr_epoch16.pt"),
+                Path("Deep_CFR/checkpoints/deep_cfr_epoch16.pt"),
+                Path("../checkpoints/deep_cfr_epoch16.pt"),
             ]
-
+            
             for checkpoint_path in checkpoint_paths:
                 if checkpoint_path.exists():
                     try:
-                        print(
-                            f"Loading Deep CFR model from {checkpoint_path}...")
+                        print(f"Loading Deep CFR model from {checkpoint_path}...")
                         self.regret_net, checkpoint = load_checkpoint(
                             str(checkpoint_path))
                         self.regret_net.eval()
                         self.use_deep_cfr = True
-                        print(
-                            f"✓ Model loaded! (trained for {checkpoint['epoch']} epochs)")
+                        print(f"✓ Model loaded! Epoch {checkpoint['epoch']} (BEST model)")
+                        print(f"  Performance: -0.43 BB/hand vs Henry")
                         break
                     except Exception as e:
                         print(f"Failed to load {checkpoint_path}: {e}")
-
+            
             if not self.use_deep_cfr:
                 print("Warning: No trained model found, falling back to random play")
                 print("Train a model first: uv run python Deep_CFR/train.py")
@@ -101,6 +105,9 @@ class Player(Bot):
     def _get_deep_cfr_action(self, game_state, round_state, active):
         '''
         Use trained Deep CFR model to select action.
+        
+        Uses Epoch 16 - the best single checkpoint from training.
+        (Tested ensemble averaging but single model performed best!)
         '''
         # Encode the current state
         state_encoding = encode_state(game_state, round_state, active)

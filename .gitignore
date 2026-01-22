@@ -13,3 +13,5 @@ gamelogs/
 *.zip
 *.log
 *.txt
+*.pkl
+*.csv

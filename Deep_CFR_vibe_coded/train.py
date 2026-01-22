@@ -22,6 +22,7 @@ import pkrbot
 from regret_network import RegretNetwork
 from cfr_trainer import CFRTrainer, create_initial_round_state
 from skeleton.states import STARTING_STACK, SMALL_BLIND, BIG_BLIND, RoundState
+from training_monitor import TrainingMonitor, create_training_plots
 
 
 def parse_args():
@@ -50,6 +51,10 @@ def parse_args():
                         help="Device: cpu or cuda")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed")
+    parser.add_argument("--eval-interval", type=int, default=5,
+                        help="Evaluate vs baseline every N epochs (0 to disable)")
+    parser.add_argument("--eval-games", type=int, default=100,
+                        help="Number of games to play for evaluation")
 
     return parser.parse_args()
 
@@ -107,6 +112,13 @@ def train_deep_cfr(args):
     # Setup checkpointing
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
+
+    # Setup training monitor
+    monitor = TrainingMonitor(log_dir="Deep_CFR/logs")
+    print("✓ Training monitor initialized")
+    print(f"  Logs: {monitor.log_dir}")
+    print(
+        f"  Evaluation: {'Every ' + str(args.eval_interval) + ' epochs' if args.eval_interval > 0 else 'Disabled'}")
 
     # Training statistics
     start_time = time.time()
@@ -175,6 +187,37 @@ def train_deep_cfr(args):
         print(f"  Epoch time: {epoch_time:.1f}s")
         print(f"  Total time: {total_time/60:.1f}m")
 
+        # === EVALUATION & MONITORING ===
+        action_dist = monitor.get_action_distribution()
+        print(f"  Action dist: Fold {action_dist['fold']:.1f}%, "
+              f"Call {action_dist['call']:.1f}%, "
+              f"Raise {action_dist['raise']:.1f}%, "
+              f"Discard {action_dist['discard']:.1f}%")
+
+        # Log metrics to CSV
+        monitor.log_epoch_metrics(
+            epoch=epoch + 1,
+            loss=train_stats['loss'],
+            avg_p0_value=avg_value_p0,
+            avg_p1_value=avg_value_p1,
+            buffer_size=train_stats['samples'],
+            action_dist=action_dist
+        )
+        monitor.reset_action_counts()
+
+        # Evaluate vs baseline every N epochs
+        if args.eval_interval > 0 and (epoch + 1) % args.eval_interval == 0:
+            eval_results = monitor.evaluate_vs_baseline(
+                regret_net=trainer.regret_net,
+                num_games=args.eval_games,
+                device=args.device
+            )
+            monitor.log_evaluation(
+                epoch=epoch + 1,
+                num_games=args.eval_games,
+                results=eval_results
+            )
+
         # === CHECKPOINTING ===
         if (epoch + 1) % args.save_interval == 0:
             checkpoint_path = save_dir / f"deep_cfr_epoch{epoch + 1}.pt"
@@ -191,10 +234,20 @@ def train_deep_cfr(args):
     print(f"Total time: {(time.time() - start_time)/60:.1f} minutes")
     print(f"Total traversals: {total_traversals}")
     print(f"Final model saved: {final_path}")
+
+    # Generate training plots
+    print(f"\nGenerating training visualizations...")
+    try:
+        create_training_plots(log_dir="Deep_CFR/logs")
+    except Exception as e:
+        print(f"  Warning: Could not generate plots: {e}")
+
     print(f"\nNext steps:")
-    print(f"  1. Test the model using test_trained_model.py")
-    print(f"  2. Use it in player.py for actual games")
-    print(f"  3. Continue training with more epochs if needed")
+    print(f"  1. Check training plots: Deep_CFR/logs/training_progress.png")
+    print(f"  2. Review metrics: Deep_CFR/logs/training_metrics.csv")
+    print(f"  3. Test the model using test_trained_model.py")
+    print(f"  4. Use it in player.py for actual games")
+    print(f"  5. Continue training with more epochs if needed")
 
 
 def save_checkpoint(trainer: CFRTrainer, epoch: int, path: Path, args):

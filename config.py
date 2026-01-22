@@ -1,11 +1,11 @@
 # PARAMETERS TO CONTROL THE BEHAVIOR OF THE GAME ENGINE
 # DO NOT REMOVE OR RENAME THIS FILE
-PLAYER_1_NAME = "Henry"
-# Change this to './player_chatbot' to interact with your own bot!
-PLAYER_1_PATH = "./python_skeleton_henry"
+PLAYER_1_NAME = "SkeletonBot"
+# Testing against original skeleton bot (simple baseline)
+PLAYER_1_PATH = "./python_skeleton_OG"
 # NO TRAILING SLASHES ARE ALLOWED IN PATHS
-PLAYER_2_NAME = "DEEP_CFR"
-PLAYER_2_PATH = "./Deep_CFR"
+PLAYER_2_NAME = "MCCFR"
+PLAYER_2_PATH = "./MCCFR"
 # GAME PROGRESS IS RECORDED HERE
 GAME_LOG_FILENAME = "gamelog"
 # Directory to store game logs. It will be created if it does not exist.

@@ -20,8 +20,11 @@ class canon_cards():
         self.canonical_hand, self.canonical_board = self.canonicalize_cards(
             hand, board)
         # Keep canonical arrays sorted at all times for consistency
-        self.canonical_hand = sorted(self.canonical_hand)
-        self.canonical_board = sorted(self.canonical_board)
+        # Sort by numeric rank (descending: Ace=14 highest)
+        self.canonical_hand = sorted(
+            self.canonical_hand, key=lambda x: int(x.split('s')[0]), reverse=True)
+        self.canonical_board = sorted(
+            self.canonical_board, key=lambda x: int(x.split('s')[0]), reverse=True)
 
     def get_card_suit(self, card) -> str:
         card_str = str(card)
@@ -73,8 +76,9 @@ class canon_cards():
         """
         canon_card = self.canonicalize_card(card)
         self.canonical_board.append(canon_card)
-        # Keep sorted for consistency
-        self.canonical_board = sorted(self.canonical_board)
+        # Keep sorted for consistency (by numeric rank, descending)
+        self.canonical_board = sorted(
+            self.canonical_board, key=lambda x: int(x.split('s')[0]), reverse=True)
 
     def remove_card_hand_by_canonical(self, canonical_card: str):
         """
@@ -90,9 +94,11 @@ class canon_cards():
         if canonical_card in self.canonical_hand:
             self.canonical_hand.remove(canonical_card)
             self.canonical_board.append(canonical_card)
-            # Keep sorted for consistency
-            self.canonical_board = sorted(self.canonical_board)
-            self.canonical_hand = sorted(self.canonical_hand)
+            # Keep sorted for consistency (by numeric rank, descending)
+            self.canonical_board = sorted(
+                self.canonical_board, key=lambda x: int(x.split('s')[0]), reverse=True)
+            self.canonical_hand = sorted(
+                self.canonical_hand, key=lambda x: int(x.split('s')[0]), reverse=True)
 
     def get_board_str(self) -> str:
         """

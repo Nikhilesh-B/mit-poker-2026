@@ -60,7 +60,7 @@ class TossHold(gym.Env):
             # Turn Card
             # River Card
             # Hand Encodings 9*[0:2]
-            # Legal Moves: Fold, Check, Call, Raise 4*[0, 1]
+            # Legal Moves: Fold, Check, Call, Raise, Discard 5*[0, 1]
         # Continous Observation:
             # My Current Stack [0:400] / 400
             # Pot Stack [0:800] / 400
@@ -82,7 +82,7 @@ class TossHold(gym.Env):
                 15, 5, 
                 15, 5, 
                 3, 3, 3, 3, 3, 3, 3, 3, 
-                2, 2, 2, 2], 
+                2, 2, 2, 2, 2], 
                 dtype=np.int16),
             'Continuous_Obs': Box(
                 low=np.array( [0.0, 0.0, 0.0, -1.0, -1.0]),
@@ -120,25 +120,39 @@ class TossHold(gym.Env):
             self.hole_cards_mini, self.board_cards_mini)
         discrete_obs += hand_enc
         
+        legality_counter = 0
+        
         # Legal Moves
         moves = round_state.legal_actions()
         # if/else in order
         if FoldAction in moves:
             discrete_obs.append(1)
+            legality_counter += 1
         else:
             discrete_obs.append(0)
         if CheckAction in moves:
             discrete_obs.append(1)
+            legality_counter += 1
         else:
             discrete_obs.append(0)
         if CallAction in moves:
             discrete_obs.append(1)
+            legality_counter += 1
         else:
             discrete_obs.append(0)
         if RaiseAction in moves:
             discrete_obs.append(1)
+            legality_counter += 1
         else:
             discrete_obs.append(0)
+        if DiscardAction in moves:
+            discrete_obs.append(1)
+            legality_counter += 1
+        else:
+            discrete_obs.append(0)
+        
+        if legality_counter == 0:
+            raise Exception(f'Legal Moves Obs not working {moves}')
         
         # ---- Continuous Observation ----
         cont_obs = []
@@ -235,8 +249,17 @@ class TossHold(gym.Env):
     def get_visible_cards_info(self):
         round_state = self.Game.current_round_state
         
-        self.hole_cards = self.card_mapper(round_state.hands[self.rl_pos])
-        self.board_cards = self.card_mapper(round_state.board)
+        # This won't work if round_state is TerminalState.
+        try:
+            self.hole_cards = self.card_mapper(round_state.hands[self.rl_pos])
+            self.board_cards = self.card_mapper(round_state.board)
+            
+        except Exception as e:
+            print(f'get_visible_cards_info() Exception: {e}')
+            print('Defaulting to empty card observations.')
+            
+            self.hole_cards = []
+            self.board_cards = []
         
         # Ideally, we should keep the order of which the cards were initially 
         # distributed, i.e. discarded card's place should be replaced 
@@ -273,13 +296,29 @@ class TossHold(gym.Env):
         
     
     def step(self, action):
+        # Default
+        reward = 0.0
+        
         # RL performs an action, then the opponent performs an action.
         # Observation comes after opponent's action is completed.
-        if self.Game.check_game_over():
-            raise RuntimeError("step() called after episode termination.")
         
-        # Default
-        reward = 0
+        # For some reason, the Game is Over befor we can step.
+        if self.Game.check_game_over():
+            terminated, truncated = True, False
+            observation = self._get_obs()
+            info = self._get_info()
+            
+            try:
+                sharpe = mean(self.bankroll)/stdev(self.bankroll)
+            except ZeroDivisionError:
+                sharpe = 0
+            if self.bankroll[-1] > 0:
+                reward += np.clip(10*sharpe, 0, 20)
+            else:
+                reward += -10
+            
+            return observation, 0.0, terminated, truncated, info
+        
         
         legal_actions_this_turn = self.Game.current_round_state.legal_actions()
         rl_agent_action = self.decode_action(action)
@@ -291,7 +330,7 @@ class TossHold(gym.Env):
                 self.Game.process_rl_train_action(CheckAction())
             else:
                 self.Game.process_rl_train_action(FoldAction())
-            reward = -0.1
+            reward = -1.0
         else:
             self.Game.process_rl_train_action(rl_agent_action)
         

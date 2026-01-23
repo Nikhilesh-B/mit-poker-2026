@@ -63,7 +63,8 @@ class Player(Bot):
         previous_state = terminal_state.previous_state  # RoundState before payoffs
         street = previous_state.street  # 0,2,3,4,5,6 representing when this round ended
         my_cards = previous_state.hands[active]  # your cards
-        opp_cards = previous_state.hands[1-active]         # opponent's cards or [] if not revealed
+        # opponent's cards or [] if not revealed
+        opp_cards = previous_state.hands[1-active]
         pass
 
     def get_action(self, game_state, round_state, active):
@@ -80,7 +81,8 @@ class Player(Bot):
         Your action.
         '''
         legal_actions = round_state.legal_actions()  # the actions you are allowed to take
-        # 0, 3, 4, or 5 representing pre-flop, flop, turn, or river respectively
+        # 0, 2, 3, 4, 5, 6 representing pre-flop, bb discard, sb discard, post
+        # discard flop betting, and then turn and river
         street = round_state.street
         my_cards = round_state.hands[active]  # your cards
         board_cards = round_state.board  # the board cards
@@ -101,12 +103,8 @@ class Player(Bot):
         # Only use DiscardAction if it's in legal_actions (which already checks street)
         # legal_actions() returns DiscardAction only when street is 2 or 3
         if DiscardAction in legal_actions:
-            # Discard the weakest card (by rank) in our hand
-            if len(my_cards) > 0:
-                rank_order = {r: i for i, r in enumerate("23456789TJQKA")}
-                weakest_idx = min(
-                    range(len(my_cards)), key=lambda i: rank_order.get(my_cards[i][0], -1))
-                return DiscardAction(weakest_idx)
+            # Always discards the first card in the bot's hand
+            return DiscardAction(0)
         if RaiseAction in legal_actions:
             # the smallest and largest numbers of chips for a legal bet/raise
             min_raise, max_raise = round_state.raise_bounds()

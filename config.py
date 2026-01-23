@@ -4,8 +4,8 @@ PLAYER_1_NAME = "SkeletonBot"
 # Testing against original skeleton bot (simple baseline)
 PLAYER_1_PATH = "./python_skeleton_OG"
 # NO TRAILING SLASHES ARE ALLOWED IN PATHS
-PLAYER_2_NAME = "MCCFR"
-PLAYER_2_PATH = "./MCCFR"
+PLAYER_2_NAME = "DeepCFR"
+PLAYER_2_PATH = "./deep_CFR_vNB_integration"
 # GAME PROGRESS IS RECORDED HERE
 GAME_LOG_FILENAME = "gamelog"
 # Directory to store game logs. It will be created if it does not exist.

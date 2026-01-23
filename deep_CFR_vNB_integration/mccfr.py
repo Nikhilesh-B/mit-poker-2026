@@ -8,6 +8,13 @@ Usage:
     mccfr = MCCFR()
     mccfr.train(num_iterations=1000)
     action = mccfr.select_action(state, player=0)
+    
+Note:
+    This module supports two modes of operation:
+    1. Training mode: Uses custom_engine for MCCFR traversals with action_taken tracking
+    2. Live play mode: Uses skeleton/states from the game engine without action_taken
+    
+    Action types are compared by name (not identity) to support both modes.
 """
 
 import sys
@@ -17,19 +24,78 @@ import os
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
 
-# Now we can import from custom_engine
+# Import from custom_engine for training
 from custom_engine import (
-    RoundState, TerminalState,
-    FoldAction, CallAction, CheckAction, RaiseAction, DiscardAction,
+    RoundState as TrainingRoundState,
+    TerminalState as TrainingTerminalState,
+    FoldAction as TrainingFoldAction,
+    CallAction as TrainingCallAction,
+    CheckAction as TrainingCheckAction,
+    RaiseAction as TrainingRaiseAction,
+    DiscardAction as TrainingDiscardAction,
     STARTING_STACK, BIG_BLIND, SMALL_BLIND
 )
 from pkrbot import Deck
 from canon_cards import canon_cards
 
+# Also import skeleton actions for live play
+from skeleton.actions import (
+    FoldAction as SkeletonFoldAction,
+    CallAction as SkeletonCallAction,
+    CheckAction as SkeletonCheckAction,
+    RaiseAction as SkeletonRaiseAction,
+    DiscardAction as SkeletonDiscardAction
+)
+
 import random
 import numpy as np
 from collections import defaultdict
 from typing import Dict, List, Tuple, Union, Optional
+
+
+# Helper functions to identify action types regardless of their source module
+def is_fold_action(action_or_type):
+    """Check if action or type is a FoldAction."""
+    name = action_or_type.__class__.__name__ if not isinstance(action_or_type, type) else action_or_type.__name__
+    return name == 'FoldAction'
+
+def is_call_action(action_or_type):
+    """Check if action or type is a CallAction."""
+    name = action_or_type.__class__.__name__ if not isinstance(action_or_type, type) else action_or_type.__name__
+    return name == 'CallAction'
+
+def is_check_action(action_or_type):
+    """Check if action or type is a CheckAction."""
+    name = action_or_type.__class__.__name__ if not isinstance(action_or_type, type) else action_or_type.__name__
+    return name == 'CheckAction'
+
+def is_raise_action(action_or_type):
+    """Check if action or type is a RaiseAction."""
+    name = action_or_type.__class__.__name__ if not isinstance(action_or_type, type) else action_or_type.__name__
+    return name == 'RaiseAction'
+
+def is_discard_action(action_or_type):
+    """Check if action or type is a DiscardAction."""
+    name = action_or_type.__class__.__name__ if not isinstance(action_or_type, type) else action_or_type.__name__
+    return name == 'DiscardAction'
+
+def is_terminal_state(state):
+    """Check if state is a TerminalState."""
+    return state.__class__.__name__ == 'TerminalState'
+
+def is_round_state(state):
+    """Check if state is a RoundState."""
+    return state.__class__.__name__ == 'RoundState'
+
+
+# Aliases for backwards compatibility with existing code that uses training actions
+RoundState = TrainingRoundState
+TerminalState = TrainingTerminalState
+FoldAction = TrainingFoldAction
+CallAction = TrainingCallAction
+CheckAction = TrainingCheckAction
+RaiseAction = TrainingRaiseAction
+DiscardAction = TrainingDiscardAction
 
 
 class MCCFR:
@@ -67,6 +133,10 @@ class MCCFR:
         - Board cards (canonical)
         - Action history
 
+        This method supports two modes:
+        1. Training mode (custom_engine.py): Uses state.action_taken for efficient history
+        2. Live play mode (skeleton/states.py): Reconstructs history from state differences
+
         Args:
             state: Current RoundState
             player: Player index (0 or 1)
@@ -80,24 +150,25 @@ class MCCFR:
         board_str = cards.get_board_str() if state.board else ''
         street = state.street
 
-        # Extract action history from action_taken field
+        # Extract action history - supports both training and live play states
         history = []
         current = state
         while current.previous_state is not None:
             prev = current.previous_state
 
+            # Method 1: Use action_taken if available (training with custom_engine)
             if hasattr(current, 'action_taken') and current.action_taken is not None:
                 action = current.action_taken
 
-                if isinstance(action, FoldAction):
+                if is_fold_action(action):
                     history.append('F')
-                elif isinstance(action, CallAction):
+                elif is_call_action(action):
                     history.append('C')
-                elif isinstance(action, CheckAction):
+                elif is_check_action(action):
                     history.append('X')
-                elif isinstance(action, DiscardAction):
+                elif is_discard_action(action):
                     history.append('D')
-                elif isinstance(action, RaiseAction):
+                elif is_raise_action(action):
                     # Bucket bet sizes into 3 categories
                     pot_from_previous_streets = (
                         2 * STARTING_STACK) - sum(prev.stacks)
@@ -117,6 +188,12 @@ class MCCFR:
                     else:
                         history.append('R')  # Default to medium
 
+            # Method 2: Reconstruct action from state differences (live play with skeleton/states)
+            else:
+                action_key = self._infer_action_from_state_diff(current, prev)
+                if action_key:
+                    history.append(action_key)
+
             current = prev
 
         # Reverse to get chronological order
@@ -127,10 +204,87 @@ class MCCFR:
         infoset = f"S{street}|H:{hand_str}|B:{board_str}|A:{history_str}"
         return infoset
 
-    def action_to_key(self, action, state: Optional[RoundState] = None,
+    def _infer_action_from_state_diff(self, current, prev) -> Optional[str]:
+        """
+        Infer what action was taken by comparing current and previous states.
+        
+        This is used during live play when the RoundState doesn't have action_taken.
+        
+        Args:
+            current: Current state
+            prev: Previous state
+            
+        Returns:
+            Single character action key ('F', 'C', 'X', 'D', 'r', 'R', 'B') or None
+        """
+        # Check for discard actions (board grows within same street during discard phase)
+        if hasattr(current, 'board') and hasattr(prev, 'board'):
+            if len(current.board) > len(prev.board):
+                # Board grew - this is a discard action (streets 2 and 3 are discard streets)
+                if prev.street in (2, 3) and current.street == prev.street:
+                    return 'D'
+        
+        # Check for street transitions (Call or Check to end betting round)
+        if current.street != prev.street:
+            # Street changed - someone either called or checked to end the round
+            # If pips were equal at end of betting, it was a check sequence
+            # If pips were unequal, it was a call to end the street
+            if prev.pips[0] == prev.pips[1]:
+                return 'X'  # Check to end street
+            else:
+                return 'C'  # Call to end street
+        
+        # Check for bets/raises/calls within same street
+        if hasattr(current, 'pips') and hasattr(prev, 'pips'):
+            if current.pips != prev.pips:
+                # Pips changed within the same street
+                # Determine if it's a call or a bet/raise
+                
+                # A call makes pips equal without increasing the max pip
+                # (the calling player just matches the existing bet)
+                if current.pips[0] == current.pips[1] and max(current.pips) == max(prev.pips):
+                    return 'C'  # Call (pips equalized, max unchanged)
+                
+                # A bet/raise increases the max pip
+                bet_amount = max(current.pips) - max(prev.pips)
+                
+                if bet_amount > 0:
+                    # This is a bet or raise
+                    pot_from_previous_streets = (2 * STARTING_STACK) - sum(prev.stacks)
+                    pot_this_street = sum(prev.pips)
+                    pot_before_bet = pot_from_previous_streets + pot_this_street
+
+                    if pot_before_bet > 0:
+                        bet_to_pot_ratio = bet_amount / pot_before_bet
+                        if bet_to_pot_ratio < 0.5:
+                            return 'r'  # Small bet
+                        elif bet_to_pot_ratio < 1.0:
+                            return 'R'  # Medium bet
+                        else:
+                            return 'B'  # Large bet
+                    else:
+                        return 'R'  # Default to medium
+                else:
+                    # Bet amount is 0 or negative - likely a call
+                    return 'C'
+        
+        # Check for checks (button advanced but pips didn't change)
+        if hasattr(current, 'button') and hasattr(prev, 'button'):
+            if current.button != prev.button and current.pips == prev.pips:
+                return 'X'  # Check (button moved, pips same)
+        
+        # Check for fold - this would be in terminal state, but handle just in case
+        # Folds are usually detected by going to terminal state, so this is rare
+        
+        return None  # Couldn't determine action
+
+    def action_to_key(self, action, state = None,
                       active_player: Optional[int] = None) -> str:
         """
         Convert an action object to a string key.
+
+        This method works with action instances from both custom_engine and 
+        skeleton.actions modules by checking type names instead of identity.
 
         Args:
             action: Action instance (FoldAction, CallAction, etc.)
@@ -140,13 +294,14 @@ class MCCFR:
         Returns:
             String key representing the action
         """
-        if isinstance(action, FoldAction):
+        # Handle action instances (check by name for cross-module compatibility)
+        if is_fold_action(action):
             return "FOLD"
-        elif isinstance(action, CallAction):
+        elif is_call_action(action):
             return "CALL"
-        elif isinstance(action, CheckAction):
+        elif is_check_action(action):
             return "CHECK"
-        elif isinstance(action, RaiseAction):
+        elif is_raise_action(action):
             # Bucket raise by size relative to pot
             if state is not None:
                 pot_from_previous_streets = (
@@ -169,7 +324,7 @@ class MCCFR:
                     return "RAISE_MEDIUM"
             else:
                 return f"RAISE_{action.amount}"
-        elif isinstance(action, DiscardAction):
+        elif is_discard_action(action):
             # Encode by canonical card value, not position
             if state is not None and active_player is not None:
                 cards = canon_cards(state.hands[active_player], state.board)
@@ -179,20 +334,21 @@ class MCCFR:
             else:
                 return f"DISCARD_{action.card}"
         elif isinstance(action, type):
-            # Handle action types (not instances)
-            if action == FoldAction:
+            # Handle action types (not instances) - check by name
+            action_name = action.__name__
+            if action_name == 'FoldAction':
                 return "FOLD"
-            elif action == CallAction:
+            elif action_name == 'CallAction':
                 return "CALL"
-            elif action == CheckAction:
+            elif action_name == 'CheckAction':
                 return "CHECK"
-            elif action == RaiseAction:
+            elif action_name == 'RaiseAction':
                 return "RAISE"
-            elif action == DiscardAction:
+            elif action_name == 'DiscardAction':
                 return "DISCARD"
         return str(action)
 
-    def get_legal_actions_list(self, state: RoundState) -> List:
+    def get_legal_actions_list(self, state, use_skeleton_actions: bool = None) -> List:
         """
         Get list of legal actions with concrete values.
 
@@ -201,8 +357,14 @@ class MCCFR:
         - Discards: All cards in hand
         - Check/Call/Fold: Single action each
 
+        This method works with states from both custom_engine and skeleton/states.
+        It automatically detects which action types to return based on the state type.
+
         Args:
-            state: Current RoundState
+            state: Current RoundState (from either custom_engine or skeleton)
+            use_skeleton_actions: If True, return skeleton action types. If False,
+                return training action types. If None (default), auto-detect based
+                on whether state has 'deck' attribute (training states have deck).
 
         Returns:
             List of concrete action instances
@@ -211,8 +373,29 @@ class MCCFR:
         actions = []
         active = state.button % 2
 
+        # Auto-detect mode: training states have 'deck' attribute, skeleton states don't
+        if use_skeleton_actions is None:
+            # Training states (custom_engine) have 'deck' attribute
+            use_skeleton_actions = not hasattr(state, 'deck')
+        
+        # Select action constructors based on mode
+        if use_skeleton_actions:
+            fold_cls = SkeletonFoldAction
+            call_cls = SkeletonCallAction
+            check_cls = SkeletonCheckAction
+            raise_cls = SkeletonRaiseAction
+            discard_cls = SkeletonDiscardAction
+        else:
+            fold_cls = TrainingFoldAction
+            call_cls = TrainingCallAction
+            check_cls = TrainingCheckAction
+            raise_cls = TrainingRaiseAction
+            discard_cls = TrainingDiscardAction
+
         for action_type in legal_action_types:
-            if action_type == RaiseAction:
+            action_name = action_type.__name__
+            
+            if action_name == 'RaiseAction':
                 # Discretize raise space into 3 sizes
                 min_raise, max_raise = state.raise_bounds()
                 raise_sizes = [
@@ -220,18 +403,26 @@ class MCCFR:
                     (min_raise + max_raise) // 2,
                     max_raise
                 ]
-                raise_sizes = sorted(list(set(raise_sizes))
-                                     )  # Remove duplicates
+                raise_sizes = sorted(list(set(raise_sizes)))  # Remove duplicates
 
                 for size in raise_sizes:
-                    actions.append(RaiseAction(size))
-            elif action_type == DiscardAction:
+                    actions.append(raise_cls(size))
+            elif action_name == 'DiscardAction':
                 # All cards in hand can be discarded
                 for card_idx in range(len(state.hands[active])):
-                    actions.append(DiscardAction(card_idx))
+                    actions.append(discard_cls(card_idx))
+            elif action_name == 'FoldAction':
+                actions.append(fold_cls())
+            elif action_name == 'CallAction':
+                actions.append(call_cls())
+            elif action_name == 'CheckAction':
+                actions.append(check_cls())
             else:
-                # Fold, Call, Check
-                actions.append(action_type())
+                # Unknown action type - try to instantiate it
+                try:
+                    actions.append(action_type())
+                except Exception:
+                    pass
 
         return actions
 
@@ -277,8 +468,7 @@ class MCCFR:
 
         return strategy
 
-    def external_sampling(self, state: Union[RoundState, TerminalState],
-                          traversing_player: int) -> float:
+    def external_sampling(self, state, traversing_player: int) -> float:
         """
         External sampling MCCFR traversal (core algorithm).
 
@@ -288,14 +478,14 @@ class MCCFR:
         - Opponent's nodes: sample action, update strategy table
 
         Args:
-            state: Current game state
+            state: Current game state (RoundState or TerminalState)
             traversing_player: Player whose regrets we're updating (0 or 1)
 
         Returns:
             Utility value for traversing player at this node
         """
-        # Terminal state: return utility
-        if isinstance(state, TerminalState):
+        # Terminal state: return utility (check by name for cross-module compatibility)
+        if is_terminal_state(state):
             return float(state.deltas[traversing_player])
 
         # Get information set

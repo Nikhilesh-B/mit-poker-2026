@@ -269,7 +269,9 @@ class Game():
     
     
     def check_round_over(self):
-        if isinstance(self.current_round_state, TerminalState):
+        state_name = type(self.current_round_state).__name__
+        if state_name == 'TerminalState':
+        # if isinstance(self.current_round_state, TerminalState):
             # !!! ChatGPT suggest not calling end_round() here,
             # but instead from the RL Gym.
             # self.end_round(self.current_round_state)

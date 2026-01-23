@@ -37,6 +37,7 @@ class TossHold(gym.Env):
     metadata = {'render_modes': ['human']}
     
     def __init__(self):
+        # XXX: Variable Opponent?
         self.Opp = PlayerSkeleton()
         
         self.start_stack = STARTING_STACK
@@ -189,7 +190,6 @@ class TossHold(gym.Env):
         self.bankroll = [0]
         
         # TODO: Add variable opponent here.
-        # But maybe it should be handled outside of Gym?
         self.Game = Engine.Game(self.Opp)
         self.start_new_round()
         
@@ -198,27 +198,31 @@ class TossHold(gym.Env):
 
         return observation, info
     
-    # !!! This is buggy.
     def start_new_round(self):
-        self.Game.start_new_round()
-        # 0 is SB, 1 is BB.
-        self.rl_pos = 0 if self.Game.sb == 'rl' else 1
-        self.get_visible_cards_info()
-        
+        # Handle multiple round starts.
         while True:
-            game_move_code = self.Game.move_game_forward()
-            # RL Agent's Turn.
-            if game_move_code == 1:
-                break
-            # Opponent Folded
-            # TODO: Check that this is valid.
-            # XXX: We're not getting any reward from this.
-            # But we're also not doing any action, so I guess it's fine?
-            if game_move_code == -1:
-                self.Game.end_round(self.Game.current_round_state)
-                self.Game.start_new_round()
-                self.rl_pos = 0 if self.Game.sb == 'rl' else 1
-                self.get_visible_cards_info()
+            self.Game.start_new_round()
+            # 0 is SB, 1 is BB.
+            self.rl_pos = 0 if self.Game.sb == 'rl' else 1
+            self.get_visible_cards_info()
+            
+            # Run until RL's turn or Game Over.
+            while True:
+                game_move_code = self.Game.move_game_forward()
+                
+                # RL Turn, Exit Function
+                if game_move_code == 1:
+                    return
+                
+                # Opponent Folded
+                elif game_move_code == -1:
+                    self.Game.end_round(self.Game.current_round_state)
+                    self.bankroll.append(self.Game.P2_bankroll)
+                    # Game Over
+                    if self.Game.check_game_over():
+                        return
+                    # Return to Outer Loop to Start a New Round
+                    break
     
     def card_mapper(self, cards):
         mapped_cards = []
@@ -271,17 +275,18 @@ class TossHold(gym.Env):
     def step(self, action):
         # RL performs an action, then the opponent performs an action.
         # Observation comes after opponent's action is completed.
+        if self.Game.check_game_over():
+            raise RuntimeError("step() called after episode termination.")
         
         # Default
         reward = 0
         
         legal_actions_this_turn = self.Game.current_round_state.legal_actions()
         rl_agent_action = self.decode_action(action)
-        rl_action_type = type(rl_agent_action)
         
         # Illegal Action, Gets Negative Reward
         # Act like engine: Check if possible, Fold otherwise
-        if rl_action_type not in legal_actions_this_turn:
+        if type(rl_agent_action) not in legal_actions_this_turn:
             if CheckAction in legal_actions_this_turn:
                 self.Game.process_rl_train_action(CheckAction())
             else:
@@ -305,7 +310,8 @@ class TossHold(gym.Env):
                 self.Game.end_round(self.Game.current_round_state)
                 self.bankroll.append(self.Game.P2_bankroll)
                 # Reward is change in bankroll, scaled by starting stack.
-                reward = (self.bankroll[-1] - self.bankroll[-2])/STARTING_STACK
+                reward += (self.bankroll[-1] - self.bankroll[-2]
+                           )/STARTING_STACK
                 # Start new round.
                 self.start_new_round()
                 break
@@ -332,7 +338,7 @@ class TossHold(gym.Env):
             except ZeroDivisionError:
                 sharpe = 0
             if self.bankroll[-1] > 0:
-                reward += 10*sharpe
+                reward += np.clip(10*sharpe, 0, 20)
             else:
                 reward += -10
         

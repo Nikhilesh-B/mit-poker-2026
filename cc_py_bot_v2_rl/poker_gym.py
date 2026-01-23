@@ -5,29 +5,31 @@
 import sys, os
 sys.path.append(os.getcwd())
 
+import numpy as np
+from statistics import mean, stdev
 from itertools import chain
 
-from config_rl import OPPONENT_PATH, NUM_ROUNDS, STARTING_STACK, \
-BIG_BLIND, SMALL_BLIND
+import gymnasium as gym
+from gymnasium.spaces import Box, MultiDiscrete, Dict
 
-# TODO: Make opponent progressively better.
-# For now, keeping it constant.
-sys.path.append(OPPONENT_PATH)
-from player import Player as Opponent
-
-import poker_utils
-from poker_utils import RANK_MAP, SUIT_MAP
-
-import pkrbot
 import engine_rl as Engine
 from engine_rl import FoldAction, CallAction, CheckAction, \
 RaiseAction, DiscardAction, TerminalState, GameState, RoundState
 
-import numpy as np
-from statistics import mean, stdev
+import pkrbot
+import poker_utils
+from poker_utils import RANK_MAP, SUIT_MAP
 
-import gymnasium as gym
-from gymnasium.spaces import Box, MultiDiscrete, Dict
+from player_rl import PlayerSkeleton, PlayerCeylan_v1, PlayerHenry_v1
+
+NUM_ROUNDS = 1000
+STARTING_STACK = 400
+BIG_BLIND = 2
+SMALL_BLIND = 1
+
+import warnings
+warnings.simplefilter('ignore')
+
 
 # %% Gym Environment
 
@@ -35,7 +37,7 @@ class TossHold(gym.Env):
     metadata = {'render_modes': ['human']}
     
     def __init__(self):
-        self.Opp = Opponent()
+        self.Opp = PlayerSkeleton()
         
         self.start_stack = STARTING_STACK
         self.tot_rounds = NUM_ROUNDS
@@ -161,7 +163,7 @@ class TossHold(gym.Env):
             r_bound = -1
         else:
             min_b, max_b = round_state.raise_bounds()
-            r_bound = max_b/my_stack
+            r_bound = max_b/STARTING_STACK
         cont_obs.append(r_bound)
         
         # ---- Combine ----

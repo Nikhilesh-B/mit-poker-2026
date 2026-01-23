@@ -10,7 +10,10 @@ import pkrbot
 import sys, os
 sys.path.append(os.getcwd())
 
-from config_rl import NUM_ROUNDS, STARTING_STACK, BIG_BLIND, SMALL_BLIND
+NUM_ROUNDS = 1000
+STARTING_STACK = 400
+BIG_BLIND = 2
+SMALL_BLIND = 1
 
 FoldAction = namedtuple('FoldAction', [])
 CallAction = namedtuple('CallAction', [])
@@ -114,7 +117,7 @@ class RoundState(namedtuple('_RoundState',
         active = self.button % 2
         action_name = type(action).__name__
         
-        if isinstance(action, DiscardAction):
+        if action_name == 'DiscardAction': # isinstance(action, DiscardAction):
             if len(self.hands[active]) != 0:
                 self.board.append(self.hands[active].pop(action.card))
             # Button changes, reset to [0, 1].
@@ -123,12 +126,12 @@ class RoundState(namedtuple('_RoundState',
                                self.deck, self.board, self)
             return state
         
-        if isinstance(action, FoldAction):
+        if action_name == 'FoldAction': # isinstance(action, FoldAction):
             # Round ends.
             delta = self.get_delta((1 - active) % 2)
             return TerminalState([delta, -delta], self)
         
-        if isinstance(action, CallAction):
+        if action_name == 'CallAction': # isinstance(action, CallAction):
             # SB called BB. Button changes.
             if self.button == 0:
                 return RoundState(1, 0, [BIG_BLIND] * 2, [
@@ -149,7 +152,7 @@ class RoundState(namedtuple('_RoundState',
             
             return state.proceed_street()
         
-        if isinstance(action, CheckAction):
+        if action_name == 'CheckAction': # isinstance(action, CheckAction):
             if (self.street == 0 and self.button > 0
                 ) or self.button > 1 or self.street == 2 or self.street == 3:
                 return self.proceed_street()
@@ -159,7 +162,7 @@ class RoundState(namedtuple('_RoundState',
                               self.board, self)
         
         # The remaining action here is for RaiseAction.
-        if isinstance(action, RaiseAction):
+        if action_name == 'RaiseAction': # isinstance(action, RaiseAction):
             new_pips = list(self.pips)
             new_stacks = list(self.stacks)
             contribution = action.amount - new_pips[active]

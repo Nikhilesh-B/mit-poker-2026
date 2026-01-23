@@ -34,10 +34,10 @@ class MyBot():
             my_cards, board_cards)
         score = poker_utils.poker_hand_scorer(my_cards, board_cards)
         
-        print({0:'SB', 1:'BB'}[active])
-        print(my_cards, board_cards, round(score, 3))
-        print(poker_hands)
-        print(legal_actions)
+        # print({0:'SB', 1:'BB'}[active])
+        # print(my_cards, board_cards, round(score, 3))
+        # print(poker_hands)
+        # print(legal_actions)
         
         # Street is number of cards on the board.
         # When not discarding at street 2 or 3, 
@@ -47,14 +47,14 @@ class MyBot():
                 return CheckAction()
             if round_state.street == 3:
                 discard_i = self.discard_chooser(my_cards, board_cards)
-                print(my_cards)
+                # print(my_cards)
                 return DiscardAction(discard_i)
         if active == 1:
             if round_state.street == 3:
                 return CheckAction()
             if round_state.street == 2:
                 discard_i = self.discard_chooser(my_cards, board_cards)
-                print(my_cards)
+                # print(my_cards)
                 return DiscardAction(discard_i)
         
         my_stack = round_state.stacks[active]
@@ -67,7 +67,7 @@ class MyBot():
                 min_raise, max_raise = round_state.raise_bounds()
                 multi = min(1, (score/20))/2
                 raise_amt = round(min_raise+(max_raise-min_raise)*multi)
-                print(min_raise, max_raise, raise_amt)
+                # print(min_raise, max_raise, raise_amt)
                 return RaiseAction(raise_amt)
         
         # They distinguish between check and call.
@@ -89,6 +89,4 @@ class MyBot():
                 min_rank = r
                 
         return min_loc
-            
-
-        
+    

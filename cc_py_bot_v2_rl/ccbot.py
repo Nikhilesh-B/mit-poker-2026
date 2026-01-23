@@ -17,8 +17,8 @@ class MyBot():
     def card_mapper(self, cards):
         mapped_cards = []
         for card in cards:
-            rank = RANK_MAP[card[0]]
-            suit = SUIT_MAP[card[1]]
+            rank = RANK_MAP[card.__str__()[0]]
+            suit = SUIT_MAP[card.__str__()[1]]
             mapped_cards.append([rank, suit])
         return mapped_cards
     

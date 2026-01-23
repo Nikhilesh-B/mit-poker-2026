@@ -21,6 +21,9 @@ DiscardAction = namedtuple('DiscardAction', ['card'])
 TerminalState = namedtuple('TerminalState', ['deltas', 'previous_state'])
 GameState = namedtuple('GameState', ['bankroll', 'game_clock', 'round_num'])
 
+# Import Actions Here, b/c isinstance is not working 
+# for some reason for opponent.
+
 
 # Active: BB: 1, SB: 0
 
@@ -109,6 +112,7 @@ class RoundState(namedtuple('_RoundState',
     def proceed(self, action):
         # Only Double-Check and Call increases street.
         active = self.button % 2
+        action_name = type(action).__name__
         
         if isinstance(action, DiscardAction):
             if len(self.hands[active]) != 0:
@@ -155,15 +159,18 @@ class RoundState(namedtuple('_RoundState',
                               self.board, self)
         
         # The remaining action here is for RaiseAction.
-        new_pips = list(self.pips)
-        new_stacks = list(self.stacks)
-        contribution = action.amount - new_pips[active]
-        new_stacks[active] -= contribution
-        new_pips[active] += contribution
+        if isinstance(action, RaiseAction):
+            new_pips = list(self.pips)
+            new_stacks = list(self.stacks)
+            contribution = action.amount - new_pips[active]
+            new_stacks[active] -= contribution
+            new_pips[active] += contribution
         
-        # Button changes.
-        return RoundState(self.button + 1, self.street, new_pips, 
-                          new_stacks, self.hands, self.deck, self.board, self)
+            # Button changes.
+            return RoundState(self.button + 1, self.street, new_pips, 
+                              new_stacks, self.hands, self.deck, self.board, self)
+        
+        raise Exception(f'Invalid Action Type: {action}')
 
 
 class Game():
@@ -260,7 +267,9 @@ class Game():
     
     def check_round_over(self):
         if isinstance(self.current_round_state, TerminalState):
-            self.end_round(self.current_round_state)
+            # !!! ChatGPT suggest not calling end_round() here,
+            # but instead from the RL Gym.
+            # self.end_round(self.current_round_state)
             return True
         else:
             return False

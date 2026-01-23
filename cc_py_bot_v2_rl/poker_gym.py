@@ -5,6 +5,8 @@
 import sys, os
 sys.path.append(os.getcwd())
 
+from itertools import chain
+
 from config_rl import OPPONENT_PATH, NUM_ROUNDS, STARTING_STACK, \
 BIG_BLIND, SMALL_BLIND
 
@@ -22,13 +24,15 @@ from engine_rl import FoldAction, CallAction, CheckAction, \
 RaiseAction, DiscardAction, TerminalState, GameState, RoundState
 
 import numpy as np
+from statistics import mean, stdev
 
 import gymnasium as gym
-from gymnasium.spaces import Box, Discrete, MultiDiscrete, Dict
+from gymnasium.spaces import Box, MultiDiscrete, Dict
 
 # %% Gym Environment
 
 class TossHold(gym.Env):
+    metadata = {'render_modes': ['human']}
     
     def __init__(self):
         self.Opp = Opponent()
@@ -36,11 +40,11 @@ class TossHold(gym.Env):
         self.start_stack = STARTING_STACK
         self.tot_rounds = NUM_ROUNDS
         
+        self.render_mode = 'human'
+        
         self.reset()
         
         # Discrete Observation:
-            # Our Turn / Opponents Turn [0:1]  
-                # -> Removed, opponent automatically plays after us.
             # BB/SB [0:1]
             # Street [0:6]
             # Hole Card 1 [2:14, 1:4] # 0 if doesn't exist
@@ -64,6 +68,8 @@ class TossHold(gym.Env):
 # TODO:     # Win Probability
 # TODO:     # Pot Odds
             
+        # XXX: I guess instead of Dict, we can use one Single Box ?
+        # Or maybe not? How critical is it to have int/float seperation?
         self.observation_space = Dict({
             'Discrete_Obs': MultiDiscrete(nvec=[
                 2, 7, 
@@ -73,21 +79,19 @@ class TossHold(gym.Env):
                 15, 5, 
                 15, 5, 
                 3, 3, 3, 3, 3, 3, 3, 3, 
-                2, 2, 2, 2], dtype=np.int16),
+                2, 2, 2, 2], 
+                dtype=np.int16),
             'Continuous_Obs': Box(
                 low=np.array( [0.0, 0.0, 0.0, -1.0, -1.0]),
-                high=np.array([1.0, 2.0, 0.0,  1.0,  1.0]))
+                high=np.array([1.0, 2.0, 1.0,  1.0,  1.0]), 
+                dtype=np.float32)
             })
         
         
-        # Action Space can't be Dict.
-        # self.action_space = Dict({'FCCR': Discrete(4), 
-        #                           'Raise': Box(0.0, 1.0)})
-        
-        # MultiDiscrete instead of Dict.
-        # First Number is Fold, Check, Call, Raise
+        # First Number is Fold, Check, Call, Raise, Discard
         # Second Number - if raise 1-10 between min/max raise bound.
-        self.action_space = MultiDiscrete(nvec=[4, 10], dtype=np.int16)
+        # Third Number is Discard Card Index
+        self.action_space = MultiDiscrete(nvec=[5, 10, 3], dtype=np.int16)
     
     def _get_obs(self):
         round_state = self.Game.current_round_state
@@ -102,8 +106,11 @@ class TossHold(gym.Env):
         # Update Card Info
         self.get_visible_cards_info()
         
-        discrete_obs += self.hole_cards
-        discrete_obs += self.board_cards
+        # Flatten Cards
+        hole_flat = list(chain.from_iterable(self.hole_cards))
+        board_flat = list(chain.from_iterable(self.board_cards))
+        discrete_obs += hole_flat
+        discrete_obs += board_flat
         
         # Hand Encodings
         hand_enc = poker_utils.evaluate_poker_hands_list(
@@ -111,7 +118,7 @@ class TossHold(gym.Env):
         discrete_obs += hand_enc
         
         # Legal Moves
-        moves = round_state.legal_actions
+        moves = round_state.legal_actions()
         # if/else in order
         if FoldAction in moves:
             discrete_obs.append(1)
@@ -158,8 +165,10 @@ class TossHold(gym.Env):
         cont_obs.append(r_bound)
         
         # ---- Combine ----
-        combined_obs = {'Discrete_Obs': discrete_obs, 
-                        'Continuous_Obs': cont_obs}
+        combined_obs = {'Discrete_Obs': np.array(discrete_obs, 
+                                                 dtype=np.int16), 
+                        'Continuous_Obs': np.array(cont_obs, 
+                                                   dtype=np.float32)}
         
         return combined_obs
         
@@ -175,6 +184,10 @@ class TossHold(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         
+        self.bankroll = [0]
+        
+        # TODO: Add variable opponent here.
+        # But maybe it should be handled outside of Gym?
         self.Game = Engine.Game(self.Opp)
         self.start_new_round()
         
@@ -183,6 +196,7 @@ class TossHold(gym.Env):
 
         return observation, info
     
+    # !!! This is buggy.
     def start_new_round(self):
         self.Game.start_new_round()
         # 0 is SB, 1 is BB.
@@ -194,14 +208,21 @@ class TossHold(gym.Env):
             # RL Agent's Turn.
             if game_move_code == 1:
                 break
-            # !!! This shouldn't give '-1',
-            # end of round here, but might need to check regardles.
+            # Opponent Folded
+            # TODO: Check that this is valid.
+            # XXX: We're not getting any reward from this.
+            # But we're also not doing any action, so I guess it's fine?
+            if game_move_code == -1:
+                self.Game.end_round(self.Game.current_round_state)
+                self.Game.start_new_round()
+                self.rl_pos = 0 if self.Game.sb == 'rl' else 1
+                self.get_visible_cards_info()
     
     def card_mapper(self, cards):
         mapped_cards = []
         for card in cards:
-            rank = RANK_MAP[card[0]]
-            suit = SUIT_MAP[card[1]]
+            rank = RANK_MAP[card.__str__()[0]]
+            suit = SUIT_MAP[card.__str__()[1]]
             mapped_cards.append([rank, suit])
         return mapped_cards
     
@@ -211,10 +232,9 @@ class TossHold(gym.Env):
         self.hole_cards = self.card_mapper(round_state.hands[self.rl_pos])
         self.board_cards = self.card_mapper(round_state.board)
         
-        # XXX: Ideally, we should keep the order of which
-        # the cards were initially distributed, 
-        # i.e. discarded card's place should be replaced with [0, 0],
-        # but should be fine for now.
+        # Ideally, we should keep the order of which the cards were initially 
+        # distributed, i.e. discarded card's place should be replaced 
+        # with [0, 0], but should be fine for now.
         
         self.hole_cards_mini = self.hole_cards[:]
         self.board_cards_mini = self.board_cards[:]
@@ -228,35 +248,46 @@ class TossHold(gym.Env):
         
     
     def decode_action(self, rl_action):
-        fccr = rl_action[0]
+        fccrd = rl_action[0]
         raise_multi = rl_action[1]
+        discard_idx = rl_action[2]
         
-        if fccr == 0:
+        if fccrd == 0:
             return FoldAction()
-        elif fccr == 1:
+        elif fccrd == 1:
             return CheckAction()
-        elif fccr == 2:
+        elif fccrd == 2:
             return CallAction()
-        else:
+        elif fccrd == 3:
             min_raise, max_raise = self.Game.current_round_state.raise_bounds()
             raise_amt = min_raise + (raise_multi/9)*(max_raise - min_raise)
             return RaiseAction(round(raise_amt))
+        else:
+            return DiscardAction(discard_idx)
         
     
     def step(self, action):
-        # !!!: We do the action, then the opponent does the action.
-        # Our observation comes after the opponent's ???
+        # RL performs an action, then the opponent performs an action.
+        # Observation comes after opponent's action is completed.
         
-        # !!! VERY IMPORTANT !!!
-        # Currently doesn't do discard action by itself.
-        # Need to manually implement that, but maybe we can 
-        # add in as third field in MultiDiscrete.
-        # If DiscardAction is legal, it need to be always played.
+        # Default
+        reward = 0
         
-        # TODO: Need to get the timing right here.
-        # B/c 
+        legal_actions_this_turn = self.Game.current_round_state.legal_actions()
         rl_agent_action = self.decode_action(action)
-        self.Game.process_rl_train_action(rl_agent_action)
+        rl_action_type = type(rl_agent_action)
+        
+        # Illegal Action, Gets Negative Reward
+        # Act like engine: Check if possible, Fold otherwise
+        if rl_action_type not in legal_actions_this_turn:
+            if CheckAction in legal_actions_this_turn:
+                self.Game.process_rl_train_action(CheckAction())
+            else:
+                self.Game.process_rl_train_action(FoldAction())
+            reward = -0.1
+        else:
+            self.Game.process_rl_train_action(rl_agent_action)
+        
         
         # While not our turn, progress game forward.
         while True:
@@ -265,10 +296,19 @@ class TossHold(gym.Env):
             # RL Agent's Turn
             if game_move_code == 1:
                 break
+            
             # Round Over
-            # TODO: Not sure how to handle this?
             elif game_move_code == -1:
+                # Update bankroll, get reward.
+                self.Game.end_round(self.Game.current_round_state)
+                self.bankroll.append(self.Game.P2_bankroll)
+                # Reward is change in bankroll, scaled by starting stack.
+                reward = (self.bankroll[-1] - self.bankroll[-2])/STARTING_STACK
+                # Start new round.
+                self.start_new_round()
                 break
+        
+        self.get_visible_cards_info()
         
         # Game end at 1000 rounds.
         if self.Game.check_game_over():
@@ -276,16 +316,33 @@ class TossHold(gym.Env):
         else:
             terminated = False
 
-        # XXX: Might have the timer here.
+        # Might have the timer here.
         truncated = False
         
-        # TODO: Write the reward function.
-        reward = 1 if terminated else 0
-
-        # XXX: Check if this obs needs to before or after
-        # RL makes its move.
+        
+        # The game result after actual 1000 rounds is the most important
+        # part for us. And as long as it's greater than 0, we win.
+        # Should still need to scale by 'win consistency' etc.
+        # which we'll be using Sharpe Ratio.
+        if terminated:
+            try:
+                sharpe = mean(self.bankroll)/stdev(self.bankroll)
+            except ZeroDivisionError:
+                sharpe = 0
+            if self.bankroll[-1] > 0:
+                reward += 10*sharpe
+            else:
+                reward += -10
+        
+        # Return the next agent observation.
         observation = self._get_obs()
         info = self._get_info()
 
         return observation, reward, terminated, truncated, info
+    
+    def render(self):
+        print('Round State: ', self.Game.current_round_state)
+        
+    def close(self):
+        pass
     

@@ -2,7 +2,12 @@
 Deep CFR Training Pipeline
 
 This module trains the DeepCFR network using samples collected from MCCFR iterations.
-The network learns to predict regrets by minimizing MSE loss against tabular MCCFR regrets.
+
+Following the paper:
+- Uses INSTANTANEOUS regrets (not cumulative)
+- Linear weighting by iteration t' in loss function
+- Gradient norm clipping
+- Fixed number of SGD iterations per training
 """
 
 import torch
@@ -22,16 +27,19 @@ class TrainingSample:
     """
     A single training sample for the network.
     
-    Attributes:
-        infoset: Infoset string
-        target_regrets: Target regret values (from MCCFR)
-        player: Player index (0 or 1)
+    Following the paper, samples include:
+    - infoset: Information set string
+    - target_regrets: INSTANTANEOUS regrets (not cumulative)
+    - player: Player index (0 or 1)
+    - iteration: CFR iteration when this sample was collected (for linear weighting)
     """
     
-    def __init__(self, infoset: str, target_regrets: Dict[str, float], player: int):
+    def __init__(self, infoset: str, target_regrets: Dict[str, float], player: int, 
+                 iteration: int = 1):
         self.infoset = infoset
         self.target_regrets = target_regrets
         self.player = player
+        self.iteration = iteration  # For linear weighting
 
 
 class DeepCFRTrainer:
@@ -50,7 +58,12 @@ class DeepCFRTrainer:
         network: DeepCFRModule,
         mccfr: MCCFR,
         learning_rate: float = 0.001,
-        batch_size: int = 32
+        batch_size: int = 2000,  # Paper uses 20,000 for HULH, start smaller
+        max_grad_norm: float = 1.0,  # Paper: gradient norm clipping to 1
+        sgd_iterations: int = 4000,  # Paper: 32,000 for HULH, start smaller
+        memory_limit: int = 2000000,  # Paper uses 40M, start with 2M
+        use_reservoir_sampling: bool = True,  # Paper: reservoir sampling is crucial
+        training_device: str = "auto"  # "auto", "mps", "cuda", or "cpu"
     ):
         """
         Initialize trainer.
@@ -59,11 +72,32 @@ class DeepCFRTrainer:
             network: DeepCFR network to train
             mccfr: MCCFR instance for generating samples
             learning_rate: Learning rate for optimizer
-            batch_size: Batch size for training
+            batch_size: Batch size for training (paper: 20,000 for HULH)
+            max_grad_norm: Maximum gradient norm for clipping (paper: 1.0)
+            sgd_iterations: Fixed number of SGD steps per training (paper: 32,000 for HULH)
+            memory_limit: Maximum samples to store (paper: 40M per player)
+            use_reservoir_sampling: If True, use reservoir sampling when memory full
+            training_device: Device for batch training ("auto" detects MPS/CUDA)
         """
         self.network = network
         self.mccfr = mccfr
         self.batch_size = batch_size
+        self.max_grad_norm = max_grad_norm
+        self.sgd_iterations = sgd_iterations
+        self.learning_rate = learning_rate
+        self.memory_limit = memory_limit
+        self.use_reservoir_sampling = use_reservoir_sampling
+        
+        # Set up training device (GPU acceleration for batch training)
+        if training_device == "auto":
+            if torch.backends.mps.is_available():
+                self.training_device = torch.device("mps")
+            elif torch.cuda.is_available():
+                self.training_device = torch.device("cuda")
+            else:
+                self.training_device = torch.device("cpu")
+        else:
+            self.training_device = torch.device(training_device)
         
         # Optimizer and loss
         self.optimizer = optim.Adam(network.parameters(), lr=learning_rate)
@@ -71,13 +105,54 @@ class DeepCFRTrainer:
         
         # Training samples storage
         self.samples = []
+        self.total_samples_seen = 0  # For reservoir sampling
         
         # Training statistics
         self.training_stats = {
             'losses': [],
             'num_samples': [],
-            'num_batches': []
+            'num_batches': [],
+            'grad_norms': [],
+            'reservoir_replacements': 0,  # Track how many times we replaced samples
+            'training_device': str(self.training_device)  # Log which device we're using
         }
+    
+    def add_sample(self, sample: TrainingSample):
+        """
+        Add a sample to the memory, using reservoir sampling if memory is full.
+        
+        Reservoir sampling ensures every sample (past or present) has equal
+        probability of being in memory, maintaining an unbiased sample.
+        
+        Algorithm (when memory is full):
+            For the N-th sample seen, replace a random sample with probability M/N
+            where M is the memory limit.
+        
+        Args:
+            sample: TrainingSample to add
+        """
+        import random
+        
+        self.total_samples_seen += 1
+        
+        if len(self.samples) < self.memory_limit:
+            # Memory not full - just append
+            self.samples.append(sample)
+        elif self.use_reservoir_sampling:
+            # Memory full - use reservoir sampling
+            # Replace a random sample with probability memory_limit / total_seen
+            replace_prob = self.memory_limit / self.total_samples_seen
+            if random.random() < replace_prob:
+                # Replace a random existing sample
+                replace_idx = random.randint(0, len(self.samples) - 1)
+                self.samples[replace_idx] = sample
+                self.training_stats['reservoir_replacements'] += 1
+        # else: memory full and not using reservoir sampling - drop the sample
+    
+    def add_samples(self, samples: List[TrainingSample]):
+        """Add multiple samples using reservoir sampling."""
+        for sample in samples:
+            self.add_sample(sample)
     
     def collect_samples_from_mccfr(self, num_iterations: int) -> int:
         """
@@ -110,7 +185,7 @@ class DeepCFRTrainer:
         samples_after = len(self.samples)
         return samples_after - samples_before
     
-    def prepare_batch(self, batch_samples: List[TrainingSample]) -> Tuple[List, List, torch.Tensor]:
+    def prepare_batch(self, batch_samples: List[TrainingSample]) -> Tuple[List, List, torch.Tensor, torch.Tensor]:
         """
         Prepare a batch of samples for training.
         
@@ -118,7 +193,7 @@ class DeepCFRTrainer:
             batch_samples: List of TrainingSample objects
         
         Returns:
-            Tuple of (canonical_cards_list, action_history_list, target_tensor)
+            Tuple of (canonical_cards_list, action_history_list, target_tensor, iteration_weights)
         """
         # Parse infosets
         infosets = [sample.infoset for sample in batch_samples]
@@ -130,6 +205,7 @@ class DeepCFRTrainer:
         state = self.mccfr.create_initial_state()
         
         target_tensors = []
+        iterations = []
         for sample in batch_samples:
             target_tensor = regrets_dict_to_tensor(
                 sample.target_regrets,
@@ -138,65 +214,164 @@ class DeepCFRTrainer:
                 self.mccfr
             )
             target_tensors.append(target_tensor)
+            iterations.append(sample.iteration)
         
         # Stack into batch
         target_batch = torch.stack(target_tensors)  # [batch_size, 9]
         
-        return cc_list, ah_list, target_batch
+        # Create iteration weights for linear weighting
+        # Paper: weight each sample by iteration t' (later iterations weighted more)
+        iteration_weights = torch.tensor(iterations, dtype=torch.float32)  # [batch_size]
+        
+        return cc_list, ah_list, target_batch, iteration_weights
     
-    def train_on_samples(self, num_epochs: int = 1) -> Dict[str, float]:
+    def train_on_samples(self, num_epochs: int = 1, use_fixed_iterations: bool = True,
+                         use_linear_weighting: bool = True) -> Dict[str, float]:
         """
         Train network on collected samples.
         
+        Following the paper:
+        - Uses fixed number of SGD iterations (not epochs)
+        - Applies gradient norm clipping
+        - Uses linear weighting by iteration t'
+        - Uses GPU (MPS/CUDA) for batch training if available
+        
         Args:
-            num_epochs: Number of epochs to train
+            num_epochs: Number of epochs (used if use_fixed_iterations=False)
+            use_fixed_iterations: If True, use self.sgd_iterations instead of epochs
+            use_linear_weighting: If True, weight loss by iteration (paper's approach)
         
         Returns:
             Dictionary with training metrics
         """
         if len(self.samples) == 0:
-            return {'loss': 0.0, 'num_batches': 0, 'num_samples': 0}
+            return {'loss': 0.0, 'num_batches': 0, 'num_samples': 0, 'avg_grad_norm': 0.0}
         
+        # Move network to training device (GPU) for batch training
+        original_device = next(self.network.parameters()).device
+        self.network.to(self.training_device)
         self.network.train()
+        
+        # Recreate optimizer for new device (optimizer state needs to match device)
+        self.optimizer = torch.optim.Adam(self.network.parameters(), lr=self.learning_rate)
         
         total_loss = 0.0
         num_batches = 0
+        total_grad_norm = 0.0
         
-        for epoch in range(num_epochs):
-            # Shuffle samples
-            import random
-            random.shuffle(self.samples)
-            
-            # Create batches
-            for i in range(0, len(self.samples), self.batch_size):
-                batch_samples = self.samples[i:i + self.batch_size]
-                
-                if len(batch_samples) == 0:
-                    continue
-                
-                # Prepare batch
-                cc_list, ah_list, target_batch = self.prepare_batch(batch_samples)
-                
-                # Forward pass
-                predictions = self.network(cc_list, ah_list)  # [batch_size, 9]
-                
-                # Compute loss
-                loss = self.criterion(predictions, target_batch)
-                
-                # Backward pass
-                self.optimizer.zero_grad()
-                loss.backward()
-                self.optimizer.step()
-                
-                total_loss += loss.item()
-                num_batches += 1
+        import random
+        
+        try:
+            if use_fixed_iterations:
+                # Paper approach: Fixed number of SGD iterations
+                for step in range(self.sgd_iterations):
+                    # Sample a random batch
+                    if len(self.samples) >= self.batch_size:
+                        batch_samples = random.sample(self.samples, self.batch_size)
+                    else:
+                        batch_samples = self.samples
+                    
+                    if len(batch_samples) == 0:
+                        continue
+                    
+                    # Prepare batch (now includes iteration weights)
+                    cc_list, ah_list, target_batch, iter_weights = self.prepare_batch(batch_samples)
+                    
+                    # Move tensors to training device
+                    target_batch = target_batch.to(self.training_device)
+                    iter_weights = iter_weights.to(self.training_device)
+                    
+                    # Forward pass (network handles internal tensor creation)
+                    predictions = self.network(cc_list, ah_list)
+                    
+                    # Move predictions to same device as targets if needed
+                    if predictions.device != target_batch.device:
+                        predictions = predictions.to(target_batch.device)
+                    
+                    # Compute loss with linear weighting
+                    # Paper: L(θ) = E[(t' · Σ_a (r̃_t'(a) - V(I,a|θ))²)]
+                    if use_linear_weighting:
+                        # Per-sample squared error, then weight by iteration
+                        squared_errors = (predictions - target_batch) ** 2  # [batch, 9]
+                        per_sample_loss = squared_errors.sum(dim=1)  # [batch]
+                        
+                        # Weight by iteration and average
+                        weighted_loss = (iter_weights * per_sample_loss).mean()
+                        loss = weighted_loss
+                    else:
+                        loss = self.criterion(predictions, target_batch)
+                    
+                    # Backward pass with gradient clipping
+                    self.optimizer.zero_grad()
+                    loss.backward()
+                    
+                    # Gradient clipping (paper: clip to norm 1)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        self.network.parameters(), 
+                        max_norm=self.max_grad_norm
+                    )
+                    total_grad_norm += grad_norm.item()
+                    
+                    self.optimizer.step()
+                    
+                    total_loss += loss.item()
+                    num_batches += 1
+            else:
+                # Legacy epoch-based approach
+                for epoch in range(num_epochs):
+                    random.shuffle(self.samples)
+                    
+                    for i in range(0, len(self.samples), self.batch_size):
+                        batch_samples = self.samples[i:i + self.batch_size]
+                        
+                        if len(batch_samples) == 0:
+                            continue
+                        
+                        cc_list, ah_list, target_batch, iter_weights = self.prepare_batch(batch_samples)
+                        
+                        # Move tensors to training device
+                        target_batch = target_batch.to(self.training_device)
+                        iter_weights = iter_weights.to(self.training_device)
+                        
+                        predictions = self.network(cc_list, ah_list)
+                        
+                        if predictions.device != target_batch.device:
+                            predictions = predictions.to(target_batch.device)
+                        
+                        # Weighted loss
+                        if use_linear_weighting:
+                            squared_errors = (predictions - target_batch) ** 2
+                            per_sample_loss = squared_errors.sum(dim=1)
+                            loss = (iter_weights * per_sample_loss).mean()
+                        else:
+                            loss = self.criterion(predictions, target_batch)
+                        
+                        self.optimizer.zero_grad()
+                        loss.backward()
+                        
+                        grad_norm = torch.nn.utils.clip_grad_norm_(
+                            self.network.parameters(), 
+                            max_norm=self.max_grad_norm
+                        )
+                        total_grad_norm += grad_norm.item()
+                        
+                        self.optimizer.step()
+                        
+                        total_loss += loss.item()
+                        num_batches += 1
+        finally:
+            # Always move network back to CPU for CFR traversal
+            self.network.to(original_device)
+            self.optimizer = torch.optim.Adam(self.network.parameters(), lr=self.learning_rate)
         
         avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
+        avg_grad_norm = total_grad_norm / num_batches if num_batches > 0 else 0.0
         
         # Store statistics
         self.training_stats['losses'].append(avg_loss)
         self.training_stats['num_samples'].append(len(self.samples))
         self.training_stats['num_batches'].append(num_batches)
+        self.training_stats['grad_norms'].append(avg_grad_norm)
         
         self.network.eval()
         
@@ -204,7 +379,8 @@ class DeepCFRTrainer:
             'loss': avg_loss,
             'num_batches': num_batches,
             'num_samples': len(self.samples),
-            'total_loss': total_loss
+            'total_loss': total_loss,
+            'avg_grad_norm': avg_grad_norm
         }
     
     def train_iteration(self, mccfr_iterations: int = 10, train_epochs: int = 1) -> Dict:

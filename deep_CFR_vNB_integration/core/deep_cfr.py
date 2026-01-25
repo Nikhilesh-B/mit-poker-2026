@@ -3,12 +3,11 @@ Full Deep CFR Algorithm
 
 This module implements the complete Deep CFR algorithm, combining:
 - Monte Carlo CFR for game tree traversal
-- Neural network for regret prediction
-- Supervised learning to train the network
+- Neural network for regret prediction (separate networks per player)
+- Supervised learning to train the networks
 
-The key idea: Instead of storing regrets in a table, we train a network
-to predict regrets for any game state. This enables generalization to
-unseen situations.
+Following the paper: We maintain separate value networks θ1, θ2 for each player.
+Each network is trained only on that player's traversal data.
 """
 
 import sys
@@ -29,65 +28,113 @@ from custom_engine import TerminalState
 
 class DeepCFR:
     """
-    Full Deep CFR Algorithm.
+    Full Deep CFR Algorithm with separate networks per player.
     
-    Combines MCCFR game tree traversal with neural network function approximation.
+    Following the paper's methodology:
+    - Two value networks: θ1 (player 0) and θ2 (player 1)
+    - Each network trained on its player's traversal data
+    - Networks retrained from scratch each CFR iteration (optional)
     
     The algorithm alternates between:
     1. Running MCCFR iterations to collect regret data
-    2. Training the network on collected samples
-    3. Using the network to predict regrets for new states
-    
-    Over time, the network learns to generalize and the regret table can be discarded.
+    2. Training the appropriate network on collected samples
+    3. Using the networks to predict regrets for new states
     """
     
     def __init__(
         self,
         network_dim: int = 256,
         learning_rate: float = 0.001,
-        batch_size: int = 32,
-        use_network_after: int = 100,  # Start using network after N iterations
-        train_every: int = 10,  # Train network every N iterations
-        train_epochs: int = 5,  # Epochs per training
-        memory_limit: int = 10000  # Max samples to keep
+        batch_size: int = 2000,  # Increased from 32 (HULH uses 20,000)
+        use_network_after: int = 100,
+        train_every: int = 10,
+        train_epochs: int = 5,
+        memory_limit: int = 2000000,  # 2M samples per player (paper uses 40M)
+        training_device: str = "auto"  # "auto", "mps", "cuda", or "cpu"
     ):
         """
-        Initialize Deep CFR.
+        Initialize Deep CFR with separate networks per player.
         
         Args:
-            network_dim: Hidden dimension for network
+            network_dim: Hidden dimension for networks
             learning_rate: Learning rate for network training
             batch_size: Batch size for training
             use_network_after: Start using network predictions after this many iterations
             train_every: Train network every N iterations
             train_epochs: Number of epochs per training session
-            memory_limit: Maximum number of samples to store
+            memory_limit: Maximum number of samples to store per player
+            training_device: Device for batch training ("auto" detects MPS/CUDA)
         """
-        # Create network
-        self.network = DeepCFRModule(
-            nhandcards=3,
-            nboardcards=5,
-            n_action_history=20,
-            nresponses=9,
-            dim=network_dim
-        )
+        self.network_dim = network_dim
+        self.learning_rate = learning_rate
+        self.batch_size = batch_size
+        self.training_device = training_device
+        
+        # Create TWO value networks - one per player (paper: θ1, θ2)
+        self.networks = {
+            0: self._create_network(network_dim),  # Player 0's value network
+            1: self._create_network(network_dim),  # Player 1's value network
+        }
+        
+        # Create STRATEGY network Π (paper: approximates average strategy)
+        # This is the network used for actual play
+        self.strategy_network = self._create_network(network_dim)
+        
+        # For backward compatibility, expose network as player 0's network
+        self.network = self.networks[0]
         
         # Create MCCFR
         self.mccfr = MCCFR()
         
-        # Create trainer
-        self.trainer = DeepCFRTrainer(
-            network=self.network,
+        # Create separate trainers for each player's value network
+        # Pass training_device for GPU acceleration during batch training
+        self.trainers = {
+            0: DeepCFRTrainer(
+                network=self.networks[0],
+                mccfr=self.mccfr,
+                learning_rate=learning_rate,
+                batch_size=batch_size,
+                training_device=training_device
+            ),
+            1: DeepCFRTrainer(
+                network=self.networks[1],
+                mccfr=self.mccfr,
+                learning_rate=learning_rate,
+                batch_size=batch_size,
+                training_device=training_device
+            )
+        }
+        
+        # Trainer for strategy network (NOT reinitialized each iteration)
+        self.strategy_trainer = DeepCFRTrainer(
+            network=self.strategy_network,
             mccfr=self.mccfr,
             learning_rate=learning_rate,
-            batch_size=batch_size
+            batch_size=batch_size,
+            training_device=training_device
         )
         
-        # Create integration
-        self.integration = NetworkMCCFRIntegration(
-            network=self.network,
+        # For backward compatibility
+        self.trainer = self.trainers[0]
+        
+        # Create integration for each player
+        self.integrations = {
+            0: NetworkMCCFRIntegration(network=self.networks[0], mccfr=self.mccfr),
+            1: NetworkMCCFRIntegration(network=self.networks[1], mccfr=self.mccfr)
+        }
+        self.integration = self.integrations[0]
+        
+        # Strategy network integration (for actual play)
+        self.strategy_integration = NetworkMCCFRIntegration(
+            network=self.strategy_network, 
             mccfr=self.mccfr
         )
+        
+        # Separate advantage memories per player (paper: MV,1 and MV,2)
+        self.advantage_memories = {
+            0: [],  # Player 0's advantage memory
+            1: []   # Player 1's advantage memory
+        }
         
         # Training configuration
         self.use_network_after = use_network_after
@@ -100,11 +147,79 @@ class DeepCFR:
         self.total_training_iterations = 0
         self.stats = {
             'iterations': [],
-            'losses': [],
-            'sample_counts': [],
+            'losses_p0': [],  # Player 0 value network losses
+            'losses_p1': [],  # Player 1 value network losses
+            'losses_strategy': [],  # Strategy network losses
+            'losses': [],     # For backward compatibility (average of value networks)
+            'sample_counts_p0': [],
+            'sample_counts_p1': [],
+            'sample_counts_strategy': [],  # Strategy network sample count
+            'sample_counts': [],  # For backward compatibility
             'network_usage': [],
             'mccfr_utilities': []
         }
+    
+    def _create_network(self, dim: int) -> DeepCFRModule:
+        """Create a new network instance."""
+        return DeepCFRModule(
+            nhandcards=3,
+            nboardcards=5,
+            n_action_history=20,
+            nresponses=9,
+            dim=dim
+        )
+    
+    def reinitialize_network(self, player: int):
+        """
+        Reinitialize a player's value network from scratch.
+        
+        Following the paper: "Train θp from scratch each CFR iteration,
+        starting from a random initialization."
+        
+        IMPORTANT: Preserves accumulated samples in the trainer's memory.
+        
+        Args:
+            player: Player index (0 or 1)
+        """
+        # PRESERVE existing samples before reinitializing
+        existing_samples = []
+        existing_total_seen = 0
+        if player in self.trainers:
+            existing_samples = self.trainers[player].samples
+            existing_total_seen = self.trainers[player].total_samples_seen
+        
+        # Create new network with random initialization
+        self.networks[player] = self._create_network(self.network_dim)
+        
+        # Update trainer with new network and fresh optimizer
+        self.trainers[player] = DeepCFRTrainer(
+            network=self.networks[player],
+            mccfr=self.mccfr,
+            learning_rate=self.learning_rate,
+            batch_size=self.batch_size,
+            training_device=self.training_device
+        )
+        
+        # RESTORE samples and total_samples_seen to new trainer (for reservoir sampling)
+        self.trainers[player].samples = existing_samples
+        self.trainers[player].total_samples_seen = existing_total_seen
+        
+        # Update integration
+        self.integrations[player] = NetworkMCCFRIntegration(
+            network=self.networks[player],
+            mccfr=self.mccfr
+        )
+        
+        # Keep backward compatibility
+        if player == 0:
+            self.network = self.networks[0]
+            self.trainer = self.trainers[0]
+            self.integration = self.integrations[0]
+    
+    def reinitialize_all_networks(self):
+        """Reinitialize all value networks from scratch."""
+        for player in [0, 1]:
+            self.reinitialize_network(player)
     
     def should_use_network(self) -> bool:
         """Check if we should use network predictions."""
@@ -183,42 +298,171 @@ class DeepCFR:
         
         return utility
     
-    def _train_network(self) -> Dict:
-        """Train the network on collected samples."""
-        # Collect samples from regret table
-        new_samples = len(self.trainer.samples)
-        for infoset, regrets in self.mccfr.regret_table.items():
-            if len(regrets) > 0:
-                from core.trainer import TrainingSample
-                sample = TrainingSample(infoset, dict(regrets), player=0)
+    def _train_network(self, traversing_player: int = None, 
+                       reinitialize: bool = True) -> Dict:
+        """
+        Train the networks on collected samples.
+        
+        Following the paper:
+        - Each player's network is trained on their own samples
+        - Networks are reinitialized from scratch each iteration
+        - Uses MCCFR advantage memory with instantaneous regrets
+        
+        Order of operations:
+        1. Collect samples from MCCFR → trainer memory
+        2. Reinitialize network (preserves samples)
+        3. Train on all accumulated samples
+        
+        Args:
+            traversing_player: If specified, only train that player's network
+            reinitialize: If True, reinitialize networks from scratch (paper's approach)
+        """
+        from core.trainer import TrainingSample
+        
+        # STEP 1: Collect samples from MCCFR's advantage memory FIRST
+        # (before reinitializing, so samples are preserved)
+        # Uses reservoir sampling when memory is full
+        new_samples_p0 = 0
+        new_samples_p1 = 0
+        
+        for player in [0, 1]:
+            for sample_dict in self.mccfr.get_advantage_samples(player):
+                sample = TrainingSample(
+                    infoset=sample_dict['infoset'],
+                    target_regrets=sample_dict['regrets'],
+                    player=sample_dict['player'],
+                    iteration=sample_dict['iteration']  # For linear weighting
+                )
                 
-                # Check if already in samples
-                if not any(s.infoset == infoset for s in self.trainer.samples):
-                    self.trainer.samples.append(sample)
+                # Add to appropriate player's trainer (uses reservoir sampling)
+                trainer = self.trainers[player]
+                trainer.add_sample(sample)
+                
+                if player == 0:
+                    new_samples_p0 += 1
+                else:
+                    new_samples_p1 += 1
         
-        new_samples = len(self.trainer.samples) - new_samples
+        # Clear MCCFR's advantage memory after collecting
+        self.mccfr.clear_advantage_memory()
         
-        # Enforce memory limit
-        if len(self.trainer.samples) > self.memory_limit:
-            # Keep most recent samples
-            self.trainer.samples = self.trainer.samples[-self.memory_limit:]
+        # STEP 2: Reinitialize networks from scratch (paper's approach)
+        # This preserves samples but creates fresh network weights
+        if reinitialize:
+            if traversing_player is not None:
+                self.reinitialize_network(traversing_player)
+            else:
+                self.reinitialize_all_networks()
         
-        # Train network
-        train_metrics = self.trainer.train_on_samples(num_epochs=self.train_epochs)
+        # Note: Memory limit is now enforced via reservoir sampling in trainer.add_sample()
+        
+        # STEP 3: Train both networks (or just the traversing player's network)
+        results = {}
+        
+        players_to_train = [traversing_player] if traversing_player is not None else [0, 1]
+        
+        for player in players_to_train:
+            if player is None:
+                continue
+            trainer = self.trainers[player]
+            if len(trainer.samples) > 0:
+                train_metrics = trainer.train_on_samples(num_epochs=self.train_epochs)
+                results[f'loss_p{player}'] = train_metrics['loss']
+                results[f'samples_p{player}'] = len(trainer.samples)
         
         self.total_training_iterations += 1
         
         # Update stats
-        self.stats['losses'].append(train_metrics['loss'])
-        self.stats['sample_counts'].append(len(self.trainer.samples))
+        loss_p0 = results.get('loss_p0', 0.0)
+        loss_p1 = results.get('loss_p1', 0.0)
+        samples_p0 = len(self.trainers[0].samples)
+        samples_p1 = len(self.trainers[1].samples)
+        
+        self.stats['losses_p0'].append(loss_p0)
+        self.stats['losses_p1'].append(loss_p1)
+        self.stats['losses'].append((loss_p0 + loss_p1) / 2)  # Backward compatibility
+        self.stats['sample_counts_p0'].append(samples_p0)
+        self.stats['sample_counts_p1'].append(samples_p1)
+        self.stats['sample_counts'].append(samples_p0 + samples_p1)
+        
+        # Train the STRATEGY network Π (not reinitialized, accumulates knowledge)
+        strategy_result = self._train_strategy_network()
+        
+        # Update strategy stats
+        self.stats['losses_strategy'].append(strategy_result.get('loss', 0.0))
+        self.stats['sample_counts_strategy'].append(strategy_result.get('num_samples', 0))
         
         return {
             'trained': True,
-            'new_samples': new_samples,
-            'total_samples': len(self.trainer.samples),
-            'loss': train_metrics['loss'],
+            'new_samples': new_samples_p0 + new_samples_p1,
+            'new_samples_p0': new_samples_p0,
+            'new_samples_p1': new_samples_p1,
+            'total_samples': samples_p0 + samples_p1,
+            'total_samples_p0': samples_p0,
+            'total_samples_p1': samples_p1,
+            'loss': (loss_p0 + loss_p1) / 2,
+            'loss_p0': loss_p0,
+            'loss_p1': loss_p1,
+            'loss_strategy': strategy_result.get('loss', 0.0),
+            'strategy_samples': strategy_result.get('num_samples', 0),
             'training_iteration': self.total_training_iterations
         }
+    
+    def _train_strategy_network(self) -> Dict:
+        """
+        Train the strategy network Π on collected strategy samples.
+        
+        Following the paper:
+        - Targets are strategy probabilities σ_t(I), NOT regrets
+        - Uses linear weighting by iteration t'
+        - NOT reinitialized (accumulates knowledge across iterations)
+        """
+        from core.trainer import TrainingSample
+        
+        # Collect strategy samples from MCCFR (uses reservoir sampling)
+        new_samples = 0
+        for sample_dict in self.mccfr.get_strategy_samples():
+            # Convert strategy dict to "regrets" format for the trainer
+            # The trainer expects target_regrets, but for strategy network,
+            # these are actually strategy probabilities
+            sample = TrainingSample(
+                infoset=sample_dict['infoset'],
+                target_regrets=sample_dict['strategy'],  # Actually strategy probs
+                player=sample_dict['player'],
+                iteration=sample_dict['iteration']
+            )
+            self.strategy_trainer.add_sample(sample)  # Uses reservoir sampling
+            new_samples += 1
+        
+        # Clear MCCFR's strategy memory after collecting
+        self.mccfr.clear_strategy_memory()
+        
+        # Train (NOT from scratch - accumulates)
+        if len(self.strategy_trainer.samples) > 0:
+            train_metrics = self.strategy_trainer.train_on_samples(
+                num_epochs=self.train_epochs,
+                use_linear_weighting=True
+            )
+            return {
+                'loss': train_metrics['loss'],
+                'num_samples': len(self.strategy_trainer.samples),
+                'new_samples': new_samples
+            }
+        
+        return {'loss': 0.0, 'num_samples': 0, 'new_samples': 0}
+    
+    def _get_infoset_player(self, infoset: str) -> int:
+        """
+        Determine which player an infoset belongs to.
+        
+        This is a heuristic based on the action history.
+        In the full implementation, this would be tracked during traversal.
+        """
+        # Count actions to determine whose turn it is
+        # Simple heuristic: alternate based on action count
+        # This is imperfect but works as a placeholder
+        action_count = infoset.count('|')  # Actions are separated by |
+        return action_count % 2
     
     def run_multiple_iterations(self, num_iterations: int, verbose: bool = True) -> List[Dict]:
         """
@@ -248,8 +492,26 @@ class DeepCFR:
         return results
     
     def get_network_strategy(self, state, player: int) -> Dict[str, float]:
-        """Get strategy from network for a given state."""
-        return self.integration.get_network_strategy(state, player)
+        """Get strategy from the appropriate player's VALUE network."""
+        return self.integrations[player].get_network_strategy(state, player)
+    
+    def get_strategy_network_output(self, state, player: int) -> Dict[str, float]:
+        """
+        Get final strategy from the STRATEGY network Π.
+        
+        This is what should be used for actual play/deployment.
+        The strategy network outputs are logits -> softmax -> probabilities.
+        """
+        return self.strategy_integration.get_network_strategy(state, player)
+    
+    def get_final_strategy(self, state, player: int) -> Dict[str, float]:
+        """
+        Get the final strategy for deployment.
+        
+        Uses the strategy network Π (trained on opponent-node strategies).
+        This is the network that should be loaded by player.py.
+        """
+        return self.get_strategy_network_output(state, player)
     
     def get_mccfr_strategy(self, state, player: int) -> Dict[str, float]:
         """Get strategy from tabular MCCFR for a given state."""

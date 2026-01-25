@@ -98,19 +98,19 @@ class MCCFR:
     """
     Monte Carlo Counterfactual Regret Minimization (MCCFR) Algorithm
 
-    This class implements Algorithm 4: External Sampling with 
-    Stochastically-Weighted Averaging.
-
-    The algorithm learns an approximate Nash equilibrium strategy by:
-    1. Recursively traversing the game tree
-    2. Computing counterfactual regrets at each decision node
-    3. Updating regret tables (can be replaced with neural network)
-    4. Converting regrets to strategies via regret matching
+    This class implements the Deep CFR paper's external sampling approach:
+    - Stores INSTANTANEOUS regrets (not cumulative) with iteration numbers
+    - Collects strategy samples at opponent nodes for the strategy network
+    
+    Following the paper:
+    - At traverser's nodes: store (infoset, iteration, instantaneous_regrets) in MV,p
+    - At opponent's nodes: store (infoset, iteration, current_strategy) in MΠ
     """
 
     def __init__(self):
         """Initialize MCCFR with empty regret and strategy tables."""
-        # Regret table: r_I[a] = cumulative regret for action a at infoset I
+        # Legacy cumulative regret table (for backward compatibility and regret matching)
+        # r_I[a] = cumulative regret for action a at infoset I
         self.regret_table = defaultdict(lambda: defaultdict(float))
 
         # Strategy table: s_I[a] = cumulative strategy for action a at infoset I
@@ -118,6 +118,19 @@ class MCCFR:
 
         # Cache for infoset lookups (avoids recomputation)
         self.infoset_cache = {}
+        
+        # === Deep CFR Paper's Data Collection ===
+        # Advantage memories MV,p: List of (infoset, iteration, instantaneous_regrets, player)
+        self.advantage_memory = {
+            0: [],  # Player 0's advantage samples
+            1: []   # Player 1's advantage samples
+        }
+        
+        # Strategy memory MΠ: List of (infoset, iteration, strategy, player)
+        self.strategy_memory = []
+        
+        # Current CFR iteration (for linear weighting)
+        self.current_iteration = 0
 
     def get_infoset(self, state: RoundState, player: int) -> str:
         """
@@ -464,18 +477,20 @@ class MCCFR:
 
         return strategy
 
-    def external_sampling(self, state, traversing_player: int) -> float:
+    def external_sampling(self, state, traversing_player: int, 
+                          collect_deep_cfr_samples: bool = True) -> float:
         """
-        External sampling MCCFR traversal (core algorithm).
+        External sampling MCCFR traversal (Deep CFR version).
 
-        This recursively traverses the game tree:
+        Following the paper's Algorithm 2:
         - Terminal states: return utility
-        - Traversing player's nodes: compute regrets, update regret table
-        - Opponent's nodes: sample action, update strategy table
+        - Traversing player's nodes: compute INSTANTANEOUS regrets, store in MV,p
+        - Opponent's nodes: sample action, store current strategy in MΠ
 
         Args:
             state: Current game state (RoundState or TerminalState)
             traversing_player: Player whose regrets we're updating (0 or 1)
+            collect_deep_cfr_samples: If True, collect samples for Deep CFR training
 
         Returns:
             Utility value for traversing player at this node
@@ -518,15 +533,30 @@ class MCCFR:
                 action_key = self.action_to_key(action, state, active_player)
                 next_state = state.proceed(action)
                 action_values[action_key] = self.external_sampling(
-                    next_state, traversing_player
+                    next_state, traversing_player, collect_deep_cfr_samples
                 )
                 node_value += strategy[action_key] * action_values[action_key]
 
-            # Compute regrets and update regret table
+            # Compute INSTANTANEOUS regrets (not cumulative!)
+            # Paper: r̃_t(I,a) = v(a) - Σ σ(a')·v(a')
+            instantaneous_regrets = {}
             for action in legal_actions:
                 action_key = self.action_to_key(action, state, active_player)
                 regret = action_values[action_key] - node_value
+                instantaneous_regrets[action_key] = regret
+                
+                # Also update cumulative table for regret matching (backward compatibility)
                 self.regret_table[infoset][action_key] += regret
+            
+            # Store in advantage memory for Deep CFR training
+            # Paper: Insert (I, t, r̃_t(I)) into MV,p
+            if collect_deep_cfr_samples:
+                self.advantage_memory[traversing_player].append({
+                    'infoset': infoset,
+                    'iteration': self.current_iteration,
+                    'regrets': instantaneous_regrets,
+                    'player': traversing_player
+                })
 
             return node_value
         else:
@@ -536,17 +566,51 @@ class MCCFR:
             probs = [strategy[key] for key in action_keys]
             sampled_action = random.choices(
                 legal_actions, weights=probs, k=1)[0]
+            
+            # Store strategy sample for strategy network (MΠ)
+            # Paper: Insert (I, t, σ_t(I)) into MΠ
+            if collect_deep_cfr_samples:
+                self.strategy_memory.append({
+                    'infoset': infoset,
+                    'iteration': self.current_iteration,
+                    'strategy': dict(strategy),  # Copy the strategy
+                    'player': active_player
+                })
 
             # Recurse with sampled action
             next_state = state.proceed(sampled_action)
-            value = self.external_sampling(next_state, traversing_player)
+            value = self.external_sampling(next_state, traversing_player, 
+                                          collect_deep_cfr_samples)
 
-            # Update cumulative strategy
+            # Update cumulative strategy (for legacy average strategy computation)
             for action in legal_actions:
                 action_key = self.action_to_key(action, state, active_player)
                 self.strategy_table[infoset][action_key] += strategy[action_key]
 
             return value
+    
+    def set_iteration(self, iteration: int):
+        """Set the current CFR iteration number (for linear weighting)."""
+        self.current_iteration = iteration
+    
+    def get_advantage_samples(self, player: int) -> list:
+        """Get collected advantage samples for a player."""
+        return self.advantage_memory[player]
+    
+    def get_strategy_samples(self) -> list:
+        """Get collected strategy samples for the strategy network."""
+        return self.strategy_memory
+    
+    def clear_advantage_memory(self, player: int = None):
+        """Clear advantage memory (optionally for specific player)."""
+        if player is not None:
+            self.advantage_memory[player] = []
+        else:
+            self.advantage_memory = {0: [], 1: []}
+    
+    def clear_strategy_memory(self):
+        """Clear strategy memory."""
+        self.strategy_memory = []
 
     def create_initial_state(self) -> RoundState:
         """
@@ -596,6 +660,9 @@ class MCCFR:
 
         for iteration in range(num_iterations):
             iter_start = time.time()
+            
+            # Set current iteration for linear weighting
+            self.set_iteration(iteration + 1)
 
             # Create new game
             initial_state = self.create_initial_state()

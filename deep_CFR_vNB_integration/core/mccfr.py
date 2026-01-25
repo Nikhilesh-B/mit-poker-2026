@@ -36,7 +36,7 @@ from custom_engine import (
     STARTING_STACK, BIG_BLIND, SMALL_BLIND
 )
 from pkrbot import Deck
-from canon_cards import canon_cards
+from utils.canon_cards import canon_cards
 
 # Also import skeleton actions for live play
 from skeleton.actions import (

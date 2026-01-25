@@ -11,7 +11,7 @@ Example: "S0|H:14s0,13s0,10s1|B:|A:RMC"
 
 import torch
 from typing import Tuple, Dict
-from canon_cards import canon_cards
+from utils.canon_cards import canon_cards
 
 
 class CanonicalCardsFromString(canon_cards):

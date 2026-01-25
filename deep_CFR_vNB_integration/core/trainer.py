@@ -19,10 +19,10 @@ from typing import List, Dict, Tuple
 import numpy as np
 from collections import defaultdict
 
-from DeepCFR import DeepCFRModule
-from mccfr import MCCFR
-from infoset_parser import parse_infoset_to_network_input, batch_parse_infosets
-from action_mapping import regrets_dict_to_tensor
+from network.model import DeepCFRModule
+from core.mccfr import MCCFR
+from utils.infoset_parser import parse_infoset_to_network_input, batch_parse_infosets
+from utils.action_mapping import regrets_dict_to_tensor
 
 
 class TrainingSample:

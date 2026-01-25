@@ -28,9 +28,9 @@ from skeleton.actions import FoldAction, CallAction, CheckAction, RaiseAction, D
 from skeleton.runner import parse_args, run_bot
 from skeleton.states import RoundState
 
-from DeepCFR import DeepCFRModule
-from mccfr import MCCFR
-from integration import NetworkMCCFRIntegration
+from network.model import DeepCFRModule
+from core.mccfr import MCCFR
+from core.integration import NetworkMCCFRIntegration
 
 
 class Player(Bot):
@@ -50,9 +50,9 @@ class Player(Bot):
         self.integration = None
         self.model_loaded = False
         
-        # Default model path
+        # Default model path (look in output/models/ folder)
         if model_path is None:
-            model_path = Path(__file__).parent / 'deep_cfr_model.pt'
+            model_path = Path(__file__).parent / 'output' / 'models' / 'deep_cfr_model.pt'
         else:
             model_path = Path(model_path)
         

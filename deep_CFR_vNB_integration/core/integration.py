@@ -14,14 +14,14 @@ sys.path.insert(0, parent_dir)
 
 import torch
 from typing import Dict, List, Tuple
-from DeepCFR import DeepCFRModule
-from infoset_parser import parse_infoset_to_network_input
-from action_mapping import (
+from network.model import DeepCFRModule
+from utils.infoset_parser import parse_infoset_to_network_input
+from utils.action_mapping import (
     map_network_output_to_actions,
     apply_legal_action_mask,
     regrets_dict_to_tensor
 )
-from mccfr import MCCFR
+from core.mccfr import MCCFR
 
 
 class NetworkMCCFRIntegration:

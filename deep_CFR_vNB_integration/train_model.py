@@ -16,7 +16,7 @@ import torch
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
 
-from deep_cfr import DeepCFR
+from core.deep_cfr import DeepCFR
 
 
 def train_model(
@@ -87,7 +87,8 @@ def train_model(
     if len(stats['sample_counts']) > 0:
         print(f"  Training samples: {stats['sample_counts'][-1]}")
     
-    # Save model
+    # Save model (ensure output directory exists)
+    os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
     print(f"\nSaving model to {output_path}...")
     model_data = {
         'network_state_dict': deep_cfr.network.state_dict(),
@@ -132,8 +133,8 @@ def main():
         help='Epochs per training session (default: 5)'
     )
     parser.add_argument(
-        '--output', type=str, default='deep_cfr_model.pt',
-        help='Output model path (default: deep_cfr_model.pt)'
+        '--output', type=str, default='output/models/deep_cfr_model.pt',
+        help='Output model path (default: output/models/deep_cfr_model.pt)'
     )
     parser.add_argument(
         '--quiet', action='store_true',

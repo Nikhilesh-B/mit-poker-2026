@@ -2,8 +2,8 @@ import torch
 import torch.nn as nn
 from typing import List
 import torch.nn.functional as F
-from CardEmbeddding import CardEmbedding
-from canon_cards import canon_cards
+from network.card_embedding import CardEmbedding
+from utils.canon_cards import canon_cards
 
 
 class DeepCFRModule(nn.Module):

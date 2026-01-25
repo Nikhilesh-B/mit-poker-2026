@@ -24,10 +24,10 @@ import numpy as np
 from typing import Dict, List, Optional
 from collections import defaultdict
 
-from DeepCFR import DeepCFRModule
-from mccfr import MCCFR
-from trainer import DeepCFRTrainer
-from integration import NetworkMCCFRIntegration
+from network.model import DeepCFRModule
+from core.mccfr import MCCFR
+from core.trainer import DeepCFRTrainer
+from core.integration import NetworkMCCFRIntegration
 from custom_engine import TerminalState
 
 
@@ -193,7 +193,7 @@ class DeepCFR:
         new_samples = len(self.trainer.samples)
         for infoset, regrets in self.mccfr.regret_table.items():
             if len(regrets) > 0:
-                from trainer import TrainingSample
+                from core.trainer import TrainingSample
                 sample = TrainingSample(infoset, dict(regrets), player=0)
                 
                 # Check if already in samples

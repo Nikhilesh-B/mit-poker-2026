@@ -50,7 +50,9 @@ class DeepCFR:
         train_every: int = 10,
         train_epochs: int = 5,
         memory_limit: int = 2000000,  # 2M samples per player (paper uses 40M)
-        training_device: str = "auto"  # "auto", "mps", "cuda", or "cpu"
+        training_device: str = "auto",  # "auto", "mps", "cuda", or "cpu"
+        traversals_per_iter: int = 1000,  # Paper uses 10,000 for FHP
+        sgd_iterations: int = 4000  # Paper uses 32,000 for HULH, 4,000 for FHP
     ):
         """
         Initialize Deep CFR with separate networks per player.
@@ -64,11 +66,15 @@ class DeepCFR:
             train_epochs: Number of epochs per training session
             memory_limit: Maximum number of samples to store per player
             training_device: Device for batch training ("auto" detects MPS/CUDA)
+            traversals_per_iter: Number of game traversals per CFR iteration (K in paper)
+            sgd_iterations: SGD steps per training session (paper: 32,000 HULH, 4,000 FHP)
         """
         self.network_dim = network_dim
         self.learning_rate = learning_rate
         self.batch_size = batch_size
         self.training_device = training_device
+        self.traversals_per_iter = traversals_per_iter
+        self.sgd_iterations = sgd_iterations
         
         # Create TWO value networks - one per player (paper: θ1, θ2)
         self.networks = {
@@ -94,14 +100,16 @@ class DeepCFR:
                 mccfr=self.mccfr,
                 learning_rate=learning_rate,
                 batch_size=batch_size,
-                training_device=training_device
+                training_device=training_device,
+                sgd_iterations=sgd_iterations
             ),
             1: DeepCFRTrainer(
                 network=self.networks[1],
                 mccfr=self.mccfr,
                 learning_rate=learning_rate,
                 batch_size=batch_size,
-                training_device=training_device
+                training_device=training_device,
+                sgd_iterations=sgd_iterations
             )
         }
         
@@ -111,7 +119,8 @@ class DeepCFR:
             mccfr=self.mccfr,
             learning_rate=learning_rate,
             batch_size=batch_size,
-            training_device=training_device
+            training_device=training_device,
+            sgd_iterations=sgd_iterations
         )
         
         # For backward compatibility
@@ -197,7 +206,8 @@ class DeepCFR:
             mccfr=self.mccfr,
             learning_rate=self.learning_rate,
             batch_size=self.batch_size,
-            training_device=self.training_device
+            training_device=self.training_device,
+            sgd_iterations=self.sgd_iterations
         )
         
         # RESTORE samples and total_samples_seen to new trainer (for reservoir sampling)
@@ -230,12 +240,18 @@ class DeepCFR:
         return (self.iteration_count > 0 and 
                 self.iteration_count % self.train_every == 0)
     
-    def run_iteration(self, use_network: Optional[bool] = None) -> Dict:
+    def run_iteration(self, use_network: Optional[bool] = None, progress_callback=None) -> Dict:
         """
-        Run a single Deep CFR iteration.
+        Run a single Deep CFR iteration with K traversals.
+        
+        Following paper's Algorithm 1:
+        - For each player p:
+          - For k = 1 to K: TRAVERSE(...) to collect samples
+        - Train networks
         
         Args:
             use_network: Force network usage (if None, uses automatic schedule)
+            progress_callback: Optional callback(completed, total, phase) for progress updates
         
         Returns:
             Dictionary with iteration statistics
@@ -244,26 +260,39 @@ class DeepCFR:
         if use_network is None:
             use_network = self.should_use_network()
         
-        # Create initial state
-        state = self.mccfr.create_initial_state()
+        # Set MCCFR iteration number for linear weighting
+        self.mccfr.set_iteration(self.iteration_count + 1)
         
-        # Run MCCFR iteration (alternating traversing player)
-        traversing_player = self.iteration_count % 2
+        # Run K traversals for EACH player (paper: "for each player p, for k=1 to K")
+        total_utility = 0.0
+        total_traversals = self.traversals_per_iter * 2  # K for each player
         
-        if use_network:
-            # Use network-based traversal
-            utility = self._cfr_with_network(state, traversing_player)
-        else:
-            # Use tabular MCCFR
-            utility = self.mccfr.external_sampling(state, traversing_player)
+        for player in [0, 1]:
+            for k in range(self.traversals_per_iter):
+                # Create fresh initial state for each traversal
+                state = self.mccfr.create_initial_state()
+                
+                if use_network:
+                    utility = self._cfr_with_network(state, player)
+                else:
+                    utility = self.mccfr.external_sampling(state, player)
+                
+                total_utility += utility
+                
+                # Report progress during sample collection
+                if progress_callback:
+                    completed = player * self.traversals_per_iter + k + 1
+                    progress_callback(completed, total_traversals, "samples")
+        
+        avg_utility = total_utility / (2 * self.traversals_per_iter)
         
         self.iteration_count += 1
         
         # Collect statistics
         result = {
             'iteration': self.iteration_count,
-            'utility': utility,
-            'traversing_player': traversing_player,
+            'utility': avg_utility,
+            'traversals': self.traversals_per_iter * 2,  # K for each player
             'used_network': use_network,
             'regret_table_size': len(self.mccfr.regret_table)
         }
@@ -276,7 +305,7 @@ class DeepCFR:
         # Update stats
         self.stats['iterations'].append(self.iteration_count)
         self.stats['network_usage'].append(use_network)
-        self.stats['mccfr_utilities'].append(utility)
+        self.stats['mccfr_utilities'].append(avg_utility)
         
         return result
     

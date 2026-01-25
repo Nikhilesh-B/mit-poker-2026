@@ -69,8 +69,13 @@ class Player(Bot):
                     dim=network_dim
                 )
                 
-                # Load weights
-                self.network.load_state_dict(model_data['network_state_dict'])
+                # Load weights - prefer strategy network (average strategy for play)
+                if 'strategy_network_state_dict' in model_data:
+                    self.network.load_state_dict(model_data['strategy_network_state_dict'])
+                elif 'network_state_dict' in model_data:
+                    self.network.load_state_dict(model_data['network_state_dict'])
+                else:
+                    raise ValueError("No valid network weights found in model file")
                 self.network.eval()  # Set to evaluation mode
                 
                 # Create MCCFR instance (needed for integration)

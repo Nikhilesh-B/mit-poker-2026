@@ -57,6 +57,24 @@ class DeepCFRModule(nn.Module):
         # nactions => discard0, discard1, discard2, check, call, fold, raise_small, raise_medium, raise_large
         self.action_head = nn.Linear(dim, nresponses)
         self.n_action_history = n_action_history
+        
+        # Initialize output layer to return 0 for all inputs (paper requirement)
+        # "Initialize each player's advantage network...so that it returns 0 for all inputs"
+        self._init_output_to_zero()
+    
+    def _init_output_to_zero(self):
+        """
+        Initialize the output layer so the network returns 0 for all inputs.
+        
+        From the paper: "Initialize each player's advantage network V(I,a|θp) 
+        with parameters θp so that it returns 0 for all inputs."
+        
+        This is important because at iteration 0, all advantages should be 0,
+        leading to uniform strategy via regret matching.
+        """
+        # Set output layer weights and bias to zero
+        nn.init.zeros_(self.action_head.weight)
+        nn.init.zeros_(self.action_head.bias)
 
     def _encode_action_history(self, action_history_str: str, device: torch.device = None) -> torch.Tensor:
         """
@@ -146,10 +164,10 @@ class DeepCFRModule(nn.Module):
         # [batch_size, dim * nhandcards]
         hand_embeds = torch.cat(hand_embeds_list, dim=1)
 
-        # Pass through hand layers (with skip connections on layers 2 and 3)
+        # Pass through hand layers (NO skip connections - following paper)
         hand_feat = F.relu(self.hand_layer1(hand_embeds))
-        hand_feat = F.relu(self.hand_layer2(hand_feat) + hand_feat)  # Skip connection
-        hand_feat = F.relu(self.hand_layer3(hand_feat) + hand_feat)  # Skip connection
+        hand_feat = F.relu(self.hand_layer2(hand_feat))
+        hand_feat = F.relu(self.hand_layer3(hand_feat))
 
         # Process board cards (same as hand)
         board_embeds_list = []
@@ -171,10 +189,10 @@ class DeepCFRModule(nn.Module):
         # [batch_size, dim * nboardcards]
         board_embeds = torch.cat(board_embeds_list, dim=1)
 
-        # Pass through board layers (with skip connections on layers 2 and 3)
+        # Pass through board layers (NO skip connections - following paper)
         board_feat = F.relu(self.board_layer1(board_embeds))
-        board_feat = F.relu(self.board_layer2(board_feat) + board_feat)  # Skip connection
-        board_feat = F.relu(self.board_layer3(board_feat) + board_feat)  # Skip connection
+        board_feat = F.relu(self.board_layer2(board_feat))
+        board_feat = F.relu(self.board_layer3(board_feat))
 
         # Encode action history
         # For batch processing, we need to handle each sample's history

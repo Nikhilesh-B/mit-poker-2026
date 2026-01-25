@@ -137,11 +137,11 @@ class TrainingMonitor:
         filled = int(bar_width * progress)
         bar = '█' * filled + '░' * (bar_width - filled)
         
-        # Print
-        print(f"\rIter {iteration:4d}/{self.total_iterations} [{bar}] {progress*100:5.1f}% | "
-              f"V0: {loss_p0:8.0f} V1: {loss_p1:8.0f} Π: {loss_strat:8.0f} | "
+        # Print training results on a clean line
+        print(f"[TRAIN] Iter {iteration:4d}/{self.total_iterations} [{bar}] {progress*100:5.1f}% | "
+              f"Loss V0: {loss_p0:8.0f} V1: {loss_p1:8.0f} Π: {loss_strat:8.0f} | "
               f"Samples: {samples_p0:.0f}K/{samples_p1:.0f}K/{samples_strat:.0f}K | "
-              f"ETA: {eta}", end='', flush=True)
+              f"ETA: {eta}", flush=True)
     
     def log_training_complete(self):
         """Log training completion."""

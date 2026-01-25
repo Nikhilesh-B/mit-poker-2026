@@ -38,6 +38,8 @@ def train_model(
     output_path: str = "deep_cfr_model.pt",
     checkpoint_every: int = 50,
     training_device: str = "auto",
+    traversals_per_iter: int = 1000,
+    sgd_iterations: int = 4000,
     verbose: bool = True
 ):
     """
@@ -54,6 +56,8 @@ def train_model(
         output_path: Path to save the model
         checkpoint_every: Save checkpoint every N iterations
         training_device: Device for batch training ("auto", "mps", "cuda", "cpu")
+        traversals_per_iter: Number of game traversals per CFR iteration (K in paper)
+        sgd_iterations: SGD steps per training session (paper: 4000-32000)
         verbose: Print progress
     """
     # Initialize training monitor
@@ -70,7 +74,9 @@ def train_model(
         use_network_after=use_network_after,
         train_every=train_every,
         train_epochs=train_epochs,
-        training_device=training_device
+        training_device=training_device,
+        traversals_per_iter=traversals_per_iter,
+        sgd_iterations=sgd_iterations
     )
     
     # Get the actual device being used
@@ -84,6 +90,8 @@ def train_model(
     print(f"  Batch size: {batch_size}")
     print(f"  Learning rate: {learning_rate}")
     print(f"  Training device: {actual_device}")
+    print(f"  Traversals per iter (K): {traversals_per_iter}")
+    print(f"  SGD iterations per train: {sgd_iterations}")
     print(f"  Train every: {train_every} iterations")
     print(f"  Checkpoint every: {checkpoint_every} iterations")
     print()
@@ -91,13 +99,38 @@ def train_model(
     # Training loop with monitoring
     for i in range(iterations):
         monitor.start_iteration()
+        iter_progress = (i + 1) / iterations
         
-        # Run single iteration
-        result = deep_cfr.run_iteration()
+        # Progress callback for sample collection visualization
+        def make_progress_callback(iter_num, iter_total, iter_prog):
+            def callback(completed, total, phase):
+                if not verbose:
+                    return
+                # Iteration progress bar
+                bar_width = 20
+                filled = int(bar_width * iter_prog)
+                iter_bar = '█' * filled + '░' * (bar_width - filled)
+                # Sample collection progress bar
+                sample_prog = completed / total if total > 0 else 0
+                sample_filled = int(bar_width * sample_prog)
+                sample_bar = '▓' * sample_filled + '░' * (bar_width - sample_filled)
+                # \033[K clears from cursor to end of line
+                print(f"\rIter {iter_num:4d}/{iter_total} [{iter_bar}] | Samples [{sample_bar}] {completed:4d}/{total}\033[K", end='', flush=True)
+            return callback
+        
+        progress_cb = make_progress_callback(i + 1, iterations, iter_progress) if verbose else None
+        
+        # Run single iteration with progress callback
+        result = deep_cfr.run_iteration(progress_callback=progress_cb)
         
         # Log metrics
         if result.get('trained', False):
+            if verbose:
+                print()  # Newline before training output
             monitor.log_iteration(i + 1, result, verbose=verbose)
+        elif verbose:
+            # Clear the line and show completion for non-training iterations
+            print(f"\rIter {i+1:4d}/{iterations} - Collected {result.get('traversals', 0)} samples\033[K")
             
             # Check if this is the best model
             avg_loss = (result.get('loss_p0', 0) + result.get('loss_p1', 0)) / 2
@@ -193,6 +226,14 @@ def main():
         choices=['auto', 'mps', 'cuda', 'cpu'],
         help='Training device: auto (detect MPS/CUDA), mps (Mac GPU), cuda, or cpu (default: auto)'
     )
+    parser.add_argument(
+        '--traversals', type=int, default=1000,
+        help='Game traversals per CFR iteration (K in paper, default: 1000, paper uses 10000)'
+    )
+    parser.add_argument(
+        '--sgd-steps', type=int, default=4000,
+        help='SGD iterations per training session (default: 4000, paper HULH uses 32000)'
+    )
     
     args = parser.parse_args()
     
@@ -207,6 +248,8 @@ def main():
         output_path=args.output,
         checkpoint_every=args.checkpoint_every,
         training_device=args.device,
+        traversals_per_iter=args.traversals,
+        sgd_iterations=args.sgd_steps,
         verbose=not args.quiet
     )
 

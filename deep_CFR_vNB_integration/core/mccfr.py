@@ -441,11 +441,12 @@ class MCCFR:
         """
         Convert regrets to strategy using regret matching.
 
-        Algorithm:
+        Algorithm (following Deep CFR paper):
         1. Take max(regret, 0) for each action (positive regrets only)
         2. Sum all positive regrets
         3. If sum > 0: normalize to get probabilities
-        4. If sum = 0: uniform distribution over all actions
+        4. If sum = 0 (all regrets negative): play HIGHEST-regret action with prob 1
+           (Paper Figure 4: This reduces exploitability by ~50% vs uniform)
 
         Args:
             regrets: Dictionary mapping action_key -> cumulative regret
@@ -467,13 +468,20 @@ class MCCFR:
         # Step 2: Sum positive regrets
         sum_positive = sum(positive_regrets.values())
 
-        # Step 3 & 4: Normalize or use uniform
+        # Step 3 & 4: Normalize or play highest-regret action
         if sum_positive > 0:
+            # Normal case: normalize positive regrets
             strategy = {
                 key: positive_regrets[key] / sum_positive for key in action_keys}
         else:
-            uniform_prob = 1.0 / len(action_keys) if action_keys else 0.0
-            strategy = {key: uniform_prob for key in action_keys}
+            # All regrets negative: play highest-regret action with probability 1
+            # (Deep CFR paper Figure 4: reduces exploitability by ~50%)
+            if action_keys:
+                # Find the action with highest (least negative) regret
+                best_action = max(action_keys, key=lambda k: regrets.get(k, 0.0))
+                strategy = {key: (1.0 if key == best_action else 0.0) for key in action_keys}
+            else:
+                strategy = {}
 
         return strategy
 

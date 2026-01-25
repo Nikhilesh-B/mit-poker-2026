@@ -5,13 +5,6 @@ This module trains the DeepCFR network using samples collected from MCCFR iterat
 The network learns to predict regrets by minimizing MSE loss against tabular MCCFR regrets.
 """
 
-import sys
-import os
-
-# Add parent directory to path
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, parent_dir)
-
 import torch
 import torch.nn as nn
 import torch.optim as optim

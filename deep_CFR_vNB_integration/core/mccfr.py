@@ -20,11 +20,7 @@ Note:
 import sys
 import os
 
-# Add parent directory to path for imports BEFORE importing custom_engine
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, parent_dir)
-
-# Import from custom_engine for training
+# Import from local custom_engine for training
 from custom_engine import (
     RoundState as TrainingRoundState,
     TerminalState as TrainingTerminalState,
@@ -33,8 +29,8 @@ from custom_engine import (
     CheckAction as TrainingCheckAction,
     RaiseAction as TrainingRaiseAction,
     DiscardAction as TrainingDiscardAction,
-    STARTING_STACK, BIG_BLIND, SMALL_BLIND
 )
+from config import STARTING_STACK, BIG_BLIND, SMALL_BLIND
 from pkrbot import Deck
 from utils.canon_cards import canon_cards
 

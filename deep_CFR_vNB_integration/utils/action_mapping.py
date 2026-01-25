@@ -12,7 +12,8 @@ The network outputs 9 actions in this order:
 
 import torch
 from typing import Dict, List, Optional
-from custom_engine import RoundState, RaiseAction, STARTING_STACK
+from custom_engine import RoundState, RaiseAction
+from config import STARTING_STACK
 
 
 # Fixed mapping: Network output index → Action type name

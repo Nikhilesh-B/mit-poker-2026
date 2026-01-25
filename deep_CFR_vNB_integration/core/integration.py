@@ -5,13 +5,6 @@ This module connects the DeepCFR network with MCCFR for a single state.
 It demonstrates the full pipeline: state → network → regret matching → action selection.
 """
 
-import sys
-import os
-
-# Add parent directory to path
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, parent_dir)
-
 import torch
 from typing import Dict, List, Tuple
 from network.model import DeepCFRModule

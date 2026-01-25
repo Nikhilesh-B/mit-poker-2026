@@ -7,20 +7,20 @@ Run these tests to verify correctness before proceeding to network integration.
 import sys
 import os
 
-# Add parent directory to path
+# Add parent directory to path for imports
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
 
 import torch
 import random
 import numpy as np
-from mccfr import MCCFR
-from infoset_parser import (
+from core.mccfr import MCCFR
+from utils.infoset_parser import (
     parse_infoset_string,
     parse_infoset_to_network_input,
     batch_parse_infosets,
 )
-from action_mapping import (
+from utils.action_mapping import (
     get_all_network_action_keys,
     map_network_output_to_actions,
     apply_legal_action_mask,

@@ -395,9 +395,17 @@ class DeepCFR:
                 continue
             trainer = self.trainers[player]
             if len(trainer.samples) > 0:
-                train_metrics = trainer.train_on_samples(num_epochs=self.train_epochs)
+                train_metrics = trainer.train_on_samples(
+                    num_epochs=self.train_epochs,
+                    verbose=True,
+                    network_name=f"V{player}"
+                )
                 results[f'loss_p{player}'] = train_metrics['loss']
                 results[f'samples_p{player}'] = len(trainer.samples)
+                # Loss progression within training session
+                results[f'loss_start_p{player}'] = train_metrics.get('loss_start')
+                results[f'loss_end_p{player}'] = train_metrics.get('loss_end')
+                results[f'loss_reduction_p{player}'] = train_metrics.get('loss_reduction_pct')
         
         self.total_training_iterations += 1
         
@@ -434,7 +442,17 @@ class DeepCFR:
             'loss_p1': loss_p1,
             'loss_strategy': strategy_result.get('loss', 0.0),
             'strategy_samples': strategy_result.get('num_samples', 0),
-            'training_iteration': self.total_training_iterations
+            'training_iteration': self.total_training_iterations,
+            # Loss progression (start → end within each training session)
+            'loss_start_p0': results.get('loss_start_p0'),
+            'loss_end_p0': results.get('loss_end_p0'),
+            'loss_reduction_p0': results.get('loss_reduction_p0'),
+            'loss_start_p1': results.get('loss_start_p1'),
+            'loss_end_p1': results.get('loss_end_p1'),
+            'loss_reduction_p1': results.get('loss_reduction_p1'),
+            'loss_start_strategy': strategy_result.get('loss_start'),
+            'loss_end_strategy': strategy_result.get('loss_end'),
+            'loss_reduction_strategy': strategy_result.get('loss_reduction_pct'),
         }
     
     def _train_strategy_network(self) -> Dict:
@@ -470,12 +488,17 @@ class DeepCFR:
         if len(self.strategy_trainer.samples) > 0:
             train_metrics = self.strategy_trainer.train_on_samples(
                 num_epochs=self.train_epochs,
-                use_linear_weighting=True
+                use_linear_weighting=True,
+                verbose=True,
+                network_name="Π"
             )
             return {
                 'loss': train_metrics['loss'],
                 'num_samples': len(self.strategy_trainer.samples),
-                'new_samples': new_samples
+                'new_samples': new_samples,
+                'loss_start': train_metrics.get('loss_start'),
+                'loss_end': train_metrics.get('loss_end'),
+                'loss_reduction_pct': train_metrics.get('loss_reduction_pct')
             }
         
         return {'loss': 0.0, 'num_samples': 0, 'new_samples': 0}

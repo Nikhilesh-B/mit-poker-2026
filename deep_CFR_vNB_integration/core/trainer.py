@@ -16,6 +16,7 @@ import torch.optim as optim
 from typing import List, Dict, Tuple
 import numpy as np
 from collections import defaultdict
+from tqdm import tqdm
 
 from network.model import DeepCFRModule
 from core.mccfr import MCCFR
@@ -226,7 +227,8 @@ class DeepCFRTrainer:
         return cc_list, ah_list, target_batch, iteration_weights
     
     def train_on_samples(self, num_epochs: int = 1, use_fixed_iterations: bool = True,
-                         use_linear_weighting: bool = True) -> Dict[str, float]:
+                         use_linear_weighting: bool = True, verbose: bool = True,
+                         network_name: str = "Network") -> Dict[str, float]:
         """
         Train network on collected samples.
         
@@ -240,12 +242,15 @@ class DeepCFRTrainer:
             num_epochs: Number of epochs (used if use_fixed_iterations=False)
             use_fixed_iterations: If True, use self.sgd_iterations instead of epochs
             use_linear_weighting: If True, weight loss by iteration (paper's approach)
+            verbose: If True, show tqdm progress bar
+            network_name: Name to display in progress bar (e.g., "V0", "V1", "Π")
         
         Returns:
             Dictionary with training metrics
         """
         if len(self.samples) == 0:
-            return {'loss': 0.0, 'num_batches': 0, 'num_samples': 0, 'avg_grad_norm': 0.0}
+            return {'loss': 0.0, 'num_batches': 0, 'num_samples': 0, 'avg_grad_norm': 0.0,
+                    'loss_start': None, 'loss_end': None, 'loss_reduction_pct': None}
         
         # Move network to training device (GPU) for batch training
         original_device = next(self.network.parameters()).device
@@ -259,12 +264,23 @@ class DeepCFRTrainer:
         num_batches = 0
         total_grad_norm = 0.0
         
+        # Track loss progression within session
+        loss_start = None
+        loss_mid = None
+        loss_end = None
+        mid_step = self.sgd_iterations // 2
+        
         import random
         
         try:
             if use_fixed_iterations:
-                # Paper approach: Fixed number of SGD iterations
-                for step in range(self.sgd_iterations):
+                # Paper approach: Fixed number of SGD iterations with tqdm progress bar
+                pbar = tqdm(range(self.sgd_iterations), 
+                           desc=f"    {network_name}", 
+                           leave=False, 
+                           disable=not verbose,
+                           ncols=80)
+                for step in pbar:
                     # Sample a random batch
                     if len(self.samples) >= self.batch_size:
                         batch_samples = random.sample(self.samples, self.batch_size)
@@ -301,6 +317,17 @@ class DeepCFRTrainer:
                     else:
                         loss = self.criterion(predictions, target_batch)
                     
+                    # Track loss at key points
+                    current_loss = loss.item()
+                    if step == 0:
+                        loss_start = current_loss
+                    if step == mid_step:
+                        loss_mid = current_loss
+                    loss_end = current_loss  # Always update (final value is the end)
+                    
+                    # Update progress bar with current loss
+                    pbar.set_postfix({'loss': f'{current_loss:,.0f}'})
+                    
                     # Backward pass with gradient clipping
                     self.optimizer.zero_grad()
                     loss.backward()
@@ -314,8 +341,14 @@ class DeepCFRTrainer:
                     
                     self.optimizer.step()
                     
-                    total_loss += loss.item()
+                    total_loss += current_loss
                     num_batches += 1
+                
+                # Print summary after training completes
+                if verbose and loss_start is not None and loss_end is not None:
+                    reduction = ((loss_start - loss_end) / loss_start * 100) if loss_start > 0 else 0
+                    arrow = "↓" if reduction > 0 else "↑"
+                    print(f"    {network_name}: {loss_start:,.0f} → {loss_end:,.0f} ({arrow}{abs(reduction):.1f}%)")
             else:
                 # Legacy epoch-based approach
                 for epoch in range(num_epochs):
@@ -367,6 +400,11 @@ class DeepCFRTrainer:
         avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
         avg_grad_norm = total_grad_norm / num_batches if num_batches > 0 else 0.0
         
+        # Calculate loss reduction
+        loss_reduction = None
+        if loss_start is not None and loss_end is not None and loss_start > 0:
+            loss_reduction = (loss_start - loss_end) / loss_start * 100  # Percentage reduction
+        
         # Store statistics
         self.training_stats['losses'].append(avg_loss)
         self.training_stats['num_samples'].append(len(self.samples))
@@ -380,7 +418,11 @@ class DeepCFRTrainer:
             'num_batches': num_batches,
             'num_samples': len(self.samples),
             'total_loss': total_loss,
-            'avg_grad_norm': avg_grad_norm
+            'avg_grad_norm': avg_grad_norm,
+            'loss_start': loss_start,
+            'loss_mid': loss_mid,
+            'loss_end': loss_end,
+            'loss_reduction_pct': loss_reduction
         }
     
     def train_iteration(self, mccfr_iterations: int = 10, train_epochs: int = 1) -> Dict:

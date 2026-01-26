@@ -24,10 +24,6 @@ DiscardAction = namedtuple('DiscardAction', ['card'])
 TerminalState = namedtuple('TerminalState', ['deltas', 'previous_state'])
 GameState = namedtuple('GameState', ['bankroll', 'game_clock', 'round_num'])
 
-# Import Actions Here, b/c isinstance is not working 
-# for some reason for opponent.
-
-
 # Active: BB: 1, SB: 0
 
 class RoundState(namedtuple('_RoundState', 
@@ -36,6 +32,11 @@ class RoundState(namedtuple('_RoundState',
     '''
     Encodes the game tree for one round of poker.
     '''
+    
+    def sanitize(self):
+        return RoundState(self.button, self.street, list(self.pips), 
+                          list(self.stacks), self.hands, self.deck, 
+                          self.board, self.previous_state)
     
     def get_delta(self, winner_index: int) -> int:
         assert winner_index in [0, 1, 2]
@@ -69,14 +70,17 @@ class RoundState(namedtuple('_RoundState',
     def legal_actions(self):
         active = self.button % 2
         continue_cost = self.pips[1-active] - self.pips[active]
-        if self.street in (2, 3):
-            return {DiscardAction} if active != self.street % 2 else {CheckAction}
+        
+        if self.street == 3:
+            return {DiscardAction}
+        
         if continue_cost == 0:
             bets_forbidden = (self.stacks[0] == 0 or self.stacks[1] == 0)
             return {CheckAction, FoldAction} if bets_forbidden else {
                 CheckAction, RaiseAction, FoldAction}
-        raises_forbidden = (continue_cost == self.stacks[
-            active] or self.stacks[1-active] == 0)
+        
+        raises_forbidden = (continue_cost == self.stacks[active] or self.stacks[
+            1-active] == 0)
         return {FoldAction, CallAction} if raises_forbidden else {
             FoldAction, CallAction, RaiseAction}
 
@@ -91,101 +95,116 @@ class RoundState(namedtuple('_RoundState',
             active] + max_contribution)
 
     def proceed_street(self):
+        new_board = list(self.board)
+        new_hands = self.hands
+        button = 1
+        
         if self.street == 6:
             return self.showdown()
-        elif self.street == 0:
+        
+        if self.street == 0:
             new_street = 2
-            button = 1
-            self.board.extend(self.deck.peek(new_street))
+            new_board = self.deck.deal(3) 
+    
         elif self.street == 2:
             new_street = 3
             button = 0
+    
         elif self.street == 3:
             new_street = 4
-            button = 1
+            new_board.append(self.deck.deal(1)[0])
+    
+        elif self.street == 4:
+            new_street = 5
+            new_board.append(self.deck.deal(1)[0])
+    
+        elif self.street == 5:
+            new_street = 6
+            
         else:
             new_street = self.street + 1
-            button = 1
-            self.board.append(self.deck.peek(new_street - 1)[new_street - 2])
-
-        return RoundState(button, new_street, [0, 0], 
-                          self.stacks, self.hands, 
-                          self.deck, self.board, self)
-
+    
+        return RoundState(
+            button, 
+            new_street, 
+            [0, 0],
+            self.stacks, 
+            new_hands, 
+            self.deck, 
+            tuple(new_board),
+            self)
+    
     def proceed(self, action):
-        # Only Double-Check and Call increases street.
         active = self.button % 2
         action_name = type(action).__name__
         
-        if action_name == 'DiscardAction': # isinstance(action, DiscardAction):
-            if len(self.hands[active]) != 0:
-                self.board.append(self.hands[active].pop(action.card))
-            # Button changes, reset to [0, 1].
-            state = RoundState((1 - active) % 2, self.street, 
-                               self.pips, self.stacks, self.hands, 
-                               self.deck, self.board, self)
-            return state
-        
-        if action_name == 'FoldAction': # isinstance(action, FoldAction):
-            # Round ends.
-            delta = self.get_delta((1 - active) % 2)
-            return TerminalState([delta, -delta], self)
-        
-        if action_name == 'CallAction': # isinstance(action, CallAction):
-            # SB called BB. Button changes.
-            if self.button == 0:
-                return RoundState(1, 0, [BIG_BLIND] * 2, [
-                    STARTING_STACK - BIG_BLIND] * 2, self.hands, 
-                    self.deck, self.board,self)
+        if action_name == 'DiscardAction':
+            new_hands = [list(self.hands[0]), list(self.hands[1])]
+            new_board = list(self.board)
             
-            # BB call or 3-raise etc.
+            if len(new_hands[active]) > 0:
+                new_board.append(new_hands[active].pop(action.card))
+            
+            interim_state = RoundState(
+                self.button + 1, 
+                self.street, 
+                self.pips, 
+                self.stacks, 
+                tuple(tuple(h) for h in new_hands), 
+                self.deck, 
+                tuple(new_board), 
+                self)
+            
+            if self.button == 1:
+                return interim_state.proceed_street() 
+            return interim_state
+        
+        if action_name == 'CallAction':
             new_pips = list(self.pips)
             new_stacks = list(self.stacks)
             contribution = new_pips[1-active] - new_pips[active]
             new_stacks[active] -= contribution
             new_pips[active] += contribution
             
-            # Button changes.
-            state = RoundState(self.button + 1, self.street, new_pips, 
-                               new_stacks, self.hands, self.deck, 
-                               self.board, self)
+            if self.street == 0 and self.button == 0:
+                return RoundState(1, self.street, new_pips, new_stacks, 
+                                  self.hands, self.deck, self.board, self)
             
+            state = RoundState(self.button + 1, self.street, new_pips, 
+                               new_stacks, self.hands, self.deck, self.board, 
+                               self)
             return state.proceed_street()
-        
-        if action_name == 'CheckAction': # isinstance(action, CheckAction):
-            if (self.street == 0 and self.button > 0
-                ) or self.button > 1 or self.street == 2 or self.street == 3:
+    
+        if action_name == 'CheckAction':
+            if (self.street == 0 and self.button == 1) or (
+                    self.street != 0 and self.button == 2):
                 return self.proceed_street()
-            # Button increased.
+            
             return RoundState(self.button + 1, self.street, self.pips, 
-                              self.stacks, self.hands, self.deck, 
-                              self.board, self)
+                              self.stacks, self.hands, self.deck, self.board, 
+                              self)
         
-        # The remaining action here is for RaiseAction.
-        if action_name == 'RaiseAction': # isinstance(action, RaiseAction):
+        if action_name == 'FoldAction':
+            delta = self.get_delta((1 - active) % 2)
+            return TerminalState([delta, -delta], self)
+    
+        if action_name == 'RaiseAction':
             new_pips = list(self.pips)
             new_stacks = list(self.stacks)
             contribution = action.amount - new_pips[active]
             new_stacks[active] -= contribution
             new_pips[active] += contribution
-        
-            # Button changes.
-            return RoundState(self.button + 1, self.street, new_pips, 
-                              new_stacks, self.hands, self.deck, self.board, self)
-        
+            return RoundState(self.button + 1, self.street, new_pips, new_stacks, 
+                              self.hands, self.deck, self.board, self)
+    
         raise Exception(f'Invalid Action Type: {action}')
-
 
 class Game():
     def __init__(self, P1):
-        # P1 is the Opponent Bot: Bot that RL is training against.
         self.P1 = P1
-        
         self.P1_bankroll = 0
         self.P2_bankroll = 0
-        
         self.current_round = 0
-    
     
     def start_new_round(self):
         if self.current_round % 2 == 0:
@@ -195,21 +214,21 @@ class Game():
             
         deck = pkrbot.Deck()
         deck.shuffle()
-        hands = [deck.deal(3), deck.deal(3)]
-        board = []
+        
+        hands = tuple(tuple(deck.deal(3)) for _ in range(2))
+        board = () 
         pips = [SMALL_BLIND, BIG_BLIND]
-        stacks = [STARTING_STACK - SMALL_BLIND, STARTING_STACK - BIG_BLIND]
+        stacks = [STARTING_STACK - SMALL_BLIND, 
+                  STARTING_STACK - BIG_BLIND]
         
-        round_state = RoundState(0, 0, pips, stacks, hands, deck, board, None)
-            # button, street, pips, stacks, hands, deck, board, previous_state
-        self.current_round_state = round_state
+        self.current_round_state = RoundState(0, 0, pips, stacks, 
+                                              hands, deck, board, None)
         
-        
-        # Opponent Handle New Round
         oppo_active_no = self.current_round % 2
         self.P1.handle_new_round(GameState(self.P1_bankroll, 120, 
                                            self.current_round), 
-                                 self.current_round_state, oppo_active_no)
+                                 self.current_round_state.sanitize(), 
+                                 oppo_active_no)
     
     def end_round(self, round_state):
         if self.sb == 'oppo':
@@ -219,7 +238,6 @@ class Game():
             self.P1_bankroll += round_state.deltas[1]
             self.P2_bankroll += round_state.deltas[0]
         
-        # Opponent Handle Round Over
         oppo_active_no = self.current_round % 2
         self.P1.handle_round_over(GameState(self.P1_bankroll, 120,
                                             self.current_round), 
@@ -232,49 +250,33 @@ class Game():
         if self.check_round_over():
             return -1
         
-        # This is always true.
         active = self.current_round_state.button % 2
-        
-        # SB is opponent.
         if self.sb == 'oppo':
-            # SB's turn.
             if active == 0:
                 self.process_opponent_action(active)
                 return 0
-            # BB's turn.
             else:
-                # !!!: Call RL from gym here.
                 return 1
-        # SB is RL.
         else:
-            # SB's turn.
             if active == 0:
-                # !!!: Call RL from gym here.
                 return 1
-            # BB's turn.
             else:
                 self.process_opponent_action(active)
                 return 0
-    
     
     def process_opponent_action(self, active):
         gs = GameState(self.P1_bankroll, 120, self.current_round)
-        action = self.P1.get_action(gs, self.current_round_state, active)
+        action = self.P1.get_action(gs, self.current_round_state.sanitize(), 
+                                    active)
         self.current_round_state = self.current_round_state.proceed(action)
-    
     
     def process_rl_train_action(self, rl_agent_action):
         self.current_round_state = self.current_round_state.proceed(
             rl_agent_action)
     
-    
     def check_round_over(self):
         state_name = type(self.current_round_state).__name__
         if state_name == 'TerminalState':
-        # if isinstance(self.current_round_state, TerminalState):
-            # !!! ChatGPT suggest not calling end_round() here,
-            # but instead from the RL Gym.
-            # self.end_round(self.current_round_state)
             return True
         else:
             return False
@@ -285,12 +287,5 @@ class Game():
         else:
             return False
     
-    
     def get_round_state(self):
         return self.current_round_state
-
-
-if __name__ == '__main__':
-    # Game().run()
-    pass
-    

@@ -33,9 +33,12 @@ print("Manual test passed!")
 
 # %% Train Model
 
+# Tensorboard CMD: 
+    # tensorboard --logdir "C:\Users\DELL\Desktop\MIT MFin\3_IAP_2026\6.9630\mit-poker-2026\cc_py_bot_v2_rl\ppo_pokerbot_v0\tboard"
+
 print("Creating model...")
 model = PPO("MultiInputPolicy", env, verbose=1, 
-            tensorboard_log="./ppo_pokerbot_v0/",
+            tensorboard_log="./ppo_pokerbot_v0/tboard/",
             learning_rate=3e-4,
             n_steps=2048,
             batch_size=64,

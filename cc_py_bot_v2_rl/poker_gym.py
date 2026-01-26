@@ -6,7 +6,7 @@ import sys, os
 sys.path.append(os.getcwd())
 
 import numpy as np
-from statistics import mean, stdev
+from statistics import mean, stdev, StatisticsError
 from itertools import chain
 
 import gymnasium as gym
@@ -45,6 +45,9 @@ class TossHold(gym.Env):
         
         self.render_mode = 'human'
         
+        self.last_action = None
+        
+        self.game_no = 0
         self.reset()
         
         # Discrete Observation:
@@ -99,87 +102,84 @@ class TossHold(gym.Env):
     def _get_obs(self):
         round_state = self.Game.current_round_state
         
-        # ---- Discrete Observation ----
-        discrete_obs = []
-        
-        # SB/BB, Street
-        discrete_obs.append(self.rl_pos)
-        discrete_obs.append(round_state.street)
-        
-        # Update Card Info
-        self.get_visible_cards_info()
-        
-        # Flatten Cards
-        hole_flat = list(chain.from_iterable(self.hole_cards))
-        board_flat = list(chain.from_iterable(self.board_cards))
-        discrete_obs += hole_flat
-        discrete_obs += board_flat
-        
-        # Hand Encodings
-        hand_enc = poker_utils.evaluate_poker_hands_list(
-            self.hole_cards_mini, self.board_cards_mini)
-        discrete_obs += hand_enc
-        
-        legality_counter = 0
-        
-        # Legal Moves
-        moves = round_state.legal_actions()
-        # if/else in order
-        if FoldAction in moves:
-            discrete_obs.append(1)
-            legality_counter += 1
+        # Handle TerminalState, shouldn't happen but I guess it does.
+        state_name = type(round_state).__name__
+        if state_name == 'TerminalState':
+            discrete_obs = [0]*33
+            cont_obs = [0.0]*5
+            
         else:
-            discrete_obs.append(0)
-        if CheckAction in moves:
-            discrete_obs.append(1)
-            legality_counter += 1
-        else:
-            discrete_obs.append(0)
-        if CallAction in moves:
-            discrete_obs.append(1)
-            legality_counter += 1
-        else:
-            discrete_obs.append(0)
-        if RaiseAction in moves:
-            discrete_obs.append(1)
-            legality_counter += 1
-        else:
-            discrete_obs.append(0)
-        if DiscardAction in moves:
-            discrete_obs.append(1)
-            legality_counter += 1
-        else:
-            discrete_obs.append(0)
-        
-        if legality_counter == 0:
-            raise Exception(f'Legal Moves Obs not working {moves}')
-        
-        # ---- Continuous Observation ----
-        cont_obs = []
-        
-        # My Stack
-        my_stack = round_state.stacks[self.rl_pos] / STARTING_STACK
-        cont_obs.append(my_stack)
-        
-        # Pot 
-        pot = sum(round_state.pips) / (2*STARTING_STACK)
-        cont_obs.append(pot)
-        
-        # Current Round
-        curr_round = self.Game.current_round / NUM_ROUNDS
-        cont_obs.append(curr_round)
-        
-        # Total Bankroll
-        tot_bankroll = self.Game.P2_bankroll / STARTING_STACK
-        cont_obs.append(tot_bankroll)
-        
-        # Raise Bounds
-        if RaiseAction not in moves:
-            r_bound = -1
-        else:
-            min_b, max_b = round_state.raise_bounds()
-            r_bound = max_b/STARTING_STACK
-        cont_obs.append(r_bound)
+            # ---- Discrete Observation ----
+            discrete_obs = []
+            
+            # SB/BB, Street
+            discrete_obs.append(self.rl_pos)
+            discrete_obs.append(6)
+            
+            # Update Card Info
+            self.get_visible_cards_info()
+            
+            # Flatten Cards
+            hole_flat = list(chain.from_iterable(self.hole_cards))
+            board_flat = list(chain.from_iterable(self.board_cards))
+            discrete_obs += hole_flat
+            discrete_obs += board_flat
+            
+            # Hand Encodings
+            hand_enc = poker_utils.evaluate_poker_hands_list(
+                self.hole_cards_mini, self.board_cards_mini)
+            discrete_obs += hand_enc
+            
+            # Legal Moves
+            moves = round_state.legal_actions()
+            # if/else in order
+            if FoldAction in moves:
+                discrete_obs.append(1)
+            else:
+                discrete_obs.append(0)
+            if CheckAction in moves:
+                discrete_obs.append(1)
+            else:
+                discrete_obs.append(0)
+            if CallAction in moves:
+                discrete_obs.append(1)
+            else:
+                discrete_obs.append(0)
+            if RaiseAction in moves:
+                discrete_obs.append(1)
+            else:
+                discrete_obs.append(0)
+            if DiscardAction in moves:
+                discrete_obs.append(1)
+            else:
+                discrete_obs.append(0)
+            
+            # ---- Continuous Observation ----
+            cont_obs = []
+            
+            # My Stack
+            my_stack = round_state.stacks[self.rl_pos] / STARTING_STACK
+            cont_obs.append(my_stack)
+            
+            # Pot 
+            pot = sum(round_state.pips) / (2 * STARTING_STACK)
+            cont_obs.append(pot)
+            
+            # Current Round
+            curr_round = self.Game.current_round / NUM_ROUNDS
+            cont_obs.append(curr_round)
+            
+            # Total Bankroll
+            tot_bankroll = self.Game.P2_bankroll / STARTING_STACK
+            cont_obs.append(tot_bankroll)
+            
+            # Raise Bounds
+            if RaiseAction not in moves:
+                r_bound = -1
+            else:
+                min_b, max_b = round_state.raise_bounds()
+                r_bound = max_b/STARTING_STACK
+            cont_obs.append(r_bound)
         
         # ---- Combine ----
         combined_obs = {'Discrete_Obs': np.array(discrete_obs, 
@@ -201,10 +201,19 @@ class TossHold(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         
+        self.game_no += 1
         self.bankroll = [0]
         
-        # TODO: Add variable opponent here.
-        self.Game = Engine.Game(self.Opp)
+        if self.game_no < int(1e4):
+            print('Opponent is Skelly.')
+            self.Game = Engine.Game(PlayerSkeleton())
+        elif self.game_no < int(6e4):
+            print('Opponent is Ceylan.')
+            self.Game = Engine.Game(PlayerCeylan_v1())
+        else:
+            print('Opponent is Henry.')
+            self.Game = Engine.Game(PlayerHenry_v1())
+        
         self.start_new_round()
         
         observation = self._get_obs()
@@ -240,7 +249,7 @@ class TossHold(gym.Env):
     
     def card_mapper(self, cards):
         mapped_cards = []
-        for card in cards:
+        for card in list(cards): 
             rank = RANK_MAP[card.__str__()[0]]
             suit = SUIT_MAP[card.__str__()[1]]
             mapped_cards.append([rank, suit])
@@ -251,9 +260,14 @@ class TossHold(gym.Env):
         
         # This won't work if round_state is TerminalState.
         try:
-            self.hole_cards = self.card_mapper(round_state.hands[self.rl_pos])
-            self.board_cards = self.card_mapper(round_state.board)
+            # ALWAYS pull fresh from the engine state
+            raw_hole = round_state.hands[self.rl_pos]
+            raw_board = round_state.board
             
+            # Map them into new lists
+            self.hole_cards = self.card_mapper(raw_hole)
+            self.board_cards = self.card_mapper(raw_board)
+        
         except Exception as e:
             print(f'get_visible_cards_info() Exception: {e}')
             print('Defaulting to empty card observations.')
@@ -261,20 +275,15 @@ class TossHold(gym.Env):
             self.hole_cards = []
             self.board_cards = []
         
-        # Ideally, we should keep the order of which the cards were initially 
-        # distributed, i.e. discarded card's place should be replaced 
-        # with [0, 0], but should be fine for now.
+        # Create the 'mini' (unpadded) versions for the evaluator
+        self.hole_cards_mini = [list(c) for c in self.hole_cards]
+        self.board_cards_mini = [list(c) for c in self.board_cards]
         
-        self.hole_cards_mini = self.hole_cards[:]
-        self.board_cards_mini = self.board_cards[:]
-        
-        # Padding
+        # Pad the main observation lists
         while len(self.hole_cards) < 3:
             self.hole_cards.append([0, 0])
-        
         while len(self.board_cards) < 6:
             self.board_cards.append([0, 0])
-        
     
     def decode_action(self, rl_action):
         fccrd = rl_action[0]
@@ -322,6 +331,8 @@ class TossHold(gym.Env):
         
         legal_actions_this_turn = self.Game.current_round_state.legal_actions()
         rl_agent_action = self.decode_action(action)
+        
+        self.last_action = rl_agent_action
         
         # Illegal Action, Gets Negative Reward
         # Act like engine: Check if possible, Fold otherwise
@@ -372,10 +383,18 @@ class TossHold(gym.Env):
         # Should still need to scale by 'win consistency' etc.
         # which we'll be using Sharpe Ratio.
         if terminated:
-            try:
-                sharpe = mean(self.bankroll)/stdev(self.bankroll)
-            except ZeroDivisionError:
+            if len(self.bankroll) > 1:
+                try:
+                    std = stdev(self.bankroll)
+                    if std > 0:
+                        sharpe = mean(self.bankroll) / std
+                    else:
+                        sharpe = 0
+                except (ZeroDivisionError, StatisticsError):
+                    sharpe = 0
+            else:
                 sharpe = 0
+            
             if self.bankroll[-1] > 0:
                 reward += np.clip(10*sharpe, 0, 20)
             else:
@@ -384,11 +403,14 @@ class TossHold(gym.Env):
         # Return the next agent observation.
         observation = self._get_obs()
         info = self._get_info()
+        
+        # self.render()
 
         return observation, reward, terminated, truncated, info
     
     def render(self):
-        print('Round State: ', self.Game.current_round_state)
+        print('\nLast Action:', self.last_action)
+        print('Round State:', self.Game.current_round_state)
         
     def close(self):
         pass

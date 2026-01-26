@@ -334,14 +334,10 @@ class MCCFR:
             else:
                 return f"RAISE_{action.amount}"
         elif is_discard_action(action):
-            # Encode by canonical card value, not position
-            if state is not None and active_player is not None:
-                cards = canon_cards(state.hands[active_player], state.board)
-                original_card = state.hands[active_player][action.card]
-                canonical_card = cards.canonicalize_card(original_card)
-                return f"DISCARD_{canonical_card}"
-            else:
-                return f"DISCARD_{action.card}"
+            # Use position-based keys (0, 1, 2) for network compatibility
+            # The network outputs DISCARD_0, DISCARD_1, DISCARD_2 for positions in hand
+            # action.card is already the position index (0, 1, or 2)
+            return f"DISCARD_{action.card}"
         elif isinstance(action, type):
             # Handle action types (not instances) - check by name
             action_name = action.__name__
@@ -468,18 +464,28 @@ class MCCFR:
         # Step 2: Sum positive regrets
         sum_positive = sum(positive_regrets.values())
 
-        # Step 3 & 4: Normalize or play highest-regret action
+        # Step 3 & 4: Normalize or handle all-negative regrets
         if sum_positive > 0:
             # Normal case: normalize positive regrets
             strategy = {
                 key: positive_regrets[key] / sum_positive for key in action_keys}
         else:
-            # All regrets negative: play highest-regret action with probability 1
-            # (Deep CFR paper Figure 4: reduces exploitability by ~50%)
+            # All regrets negative: use softmax on regrets with temperature
+            # This gives probabilistic strategies (better for NN training) while
+            # still favoring higher-regret actions. Temperature=1.0 means regrets
+            # are used directly as logits.
+            # 
+            # Note: Paper Figure 4 suggests deterministic (pick best) reduces
+            # exploitability by ~50%, but that creates poor training targets.
+            # We use softmax for more diverse samples.
+            import math
             if action_keys:
-                # Find the action with highest (least negative) regret
-                best_action = max(action_keys, key=lambda k: regrets.get(k, 0.0))
-                strategy = {key: (1.0 if key == best_action else 0.0) for key in action_keys}
+                # Softmax: exp(r) / sum(exp(r)) - shift by max for numerical stability
+                regret_values = [regrets.get(k, 0.0) for k in action_keys]
+                max_regret = max(regret_values)
+                exp_values = [math.exp(r - max_regret) for r in regret_values]
+                sum_exp = sum(exp_values)
+                strategy = {key: exp_values[i] / sum_exp for i, key in enumerate(action_keys)}
             else:
                 strategy = {}
 

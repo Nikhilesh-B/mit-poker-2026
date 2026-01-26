@@ -103,29 +103,23 @@ def map_network_output_to_actions(network_output: torch.Tensor,
     Returns:
         Dictionary mapping action_key -> regret value (only for actions that exist)
     """
-    from custom_engine import DiscardAction
-    
-    # Get legal actions
+    # Get legal actions and their keys
     legal_actions = mccfr_instance.get_legal_actions_list(state)
     legal_keys = {mccfr_instance.action_to_key(a, state, active_player) for a in legal_actions}
     
     # Map network output to action keys
     regret_dict = {}
     
-    # Get discard actions (they're position-based in network, but canonical in MCCFR)
-    discard_actions = [a for a in legal_actions if isinstance(a, DiscardAction)]
-    
     # Map each network output index
     for i in range(9):
         network_regret = network_output[i].item()
         
         if i < 3:
-            # Discard actions (0, 1, 2)
-            # Map network discard index to legal discard action by position
-            if i < len(discard_actions):
-                action_key = mccfr_instance.action_to_key(discard_actions[i], state, active_player)
-                regret_dict[action_key] = network_regret
-            # If no discard at this index, it's illegal - will be masked later
+            # Discard actions (0, 1, 2) - now using position-based keys
+            discard_key = f'DISCARD_{i}'
+            if discard_key in legal_keys:
+                regret_dict[discard_key] = network_regret
+            # If not in legal_keys, this discard position is illegal
         elif i == 3:
             # Check
             if 'CHECK' in legal_keys:
@@ -251,26 +245,19 @@ def regrets_dict_to_tensor(regrets_dict: Dict[str, float],
     Returns:
         Tensor of shape [9] with regrets in network output order
     """
-    # Get legal actions to map discard actions properly
-    legal_actions = mccfr_instance.get_legal_actions_list(state)
-    
     # Build tensor in network output order [9]
     regrets_list = []
     
-    # Discard actions (0, 1, 2)
-    from custom_engine import DiscardAction
-    discard_actions = [a for a in legal_actions if isinstance(a, DiscardAction)]
+    # Discard actions (0, 1, 2) - now using position-based keys
+    # DISCARD_0 = first card, DISCARD_1 = second card, DISCARD_2 = third card
+    # Use 0.0 for missing discards (neutral - won't push network outputs extreme)
     for i in range(3):
-        if i < len(discard_actions):
-            action_key = mccfr_instance.action_to_key(discard_actions[i], state, active_player)
-            regrets_list.append(regrets_dict.get(action_key, -1000.0))
-        else:
-            regrets_list.append(-1000.0)  # Illegal discard
+        regrets_list.append(regrets_dict.get(f'DISCARD_{i}', 0.0))
     
     # Check, Call, Fold (3, 4, 5)
-    regrets_list.append(regrets_dict.get('CHECK', -1000.0))
-    regrets_list.append(regrets_dict.get('CALL', -1000.0))
-    regrets_list.append(regrets_dict.get('FOLD', -1000.0))
+    regrets_list.append(regrets_dict.get('CHECK', 0.0))
+    regrets_list.append(regrets_dict.get('CALL', 0.0))
+    regrets_list.append(regrets_dict.get('FOLD', 0.0))
     
     # Raises (6, 7, 8) - map based on raise amounts
     min_raise, max_raise = state.raise_bounds()
@@ -279,11 +266,12 @@ def regrets_dict_to_tensor(regrets_dict: Dict[str, float],
     # Find raise keys in regrets_dict (they might be RAISE_SMALL, RAISE_MEDIUM, RAISE_LARGE
     # or RAISE_{amount} depending on how they were computed)
     # We'll look for the actual raise amount keys
+    # Use 0.0 for missing raises (neutral target)
     regrets_list.append(regrets_dict.get(f'RAISE_{min_raise}', 
-                                        regrets_dict.get('RAISE_SMALL', -1000.0)))
+                                        regrets_dict.get('RAISE_SMALL', 0.0)))
     regrets_list.append(regrets_dict.get(f'RAISE_{mid_raise}',
-                                        regrets_dict.get('RAISE_MEDIUM', -1000.0)))
+                                        regrets_dict.get('RAISE_MEDIUM', 0.0)))
     regrets_list.append(regrets_dict.get(f'RAISE_{max_raise}',
-                                        regrets_dict.get('RAISE_LARGE', -1000.0)))
+                                        regrets_dict.get('RAISE_LARGE', 0.0)))
     
     return torch.tensor(regrets_list, dtype=torch.float32)

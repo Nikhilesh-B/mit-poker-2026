@@ -503,19 +503,8 @@ class MCCFR:
         Returns:
             Utility value for traversing player at this node
         """
-        # #region agent log
-        import time
-        import json
-        call_start = time.time()
-        recursion_depth = getattr(self, '_recursion_depth', 0)
-        self._recursion_depth = recursion_depth + 1
-        # #endregion
-        
         # Terminal state: return utility (check by name for cross-module compatibility)
         if is_terminal_state(state):
-            # #region agent log
-            self._recursion_depth = max(0, self._recursion_depth - 1)
-            # #endregion
             return float(state.deltas[traversing_player])
 
         # Get information set
@@ -570,26 +559,12 @@ class MCCFR:
             # Store in advantage memory for Deep CFR training
             # Paper: Insert (I, t, r̃_t(I)) into MV,p
             if collect_deep_cfr_samples:
-                # #region agent log
-                adv_mem_before = len(self.advantage_memory[traversing_player])
-                # #endregion
                 self.advantage_memory[traversing_player].append({
                     'infoset': infoset,
                     'iteration': self.current_iteration,
                     'regrets': instantaneous_regrets,
                     'player': traversing_player
                 })
-                # #region agent log
-                if len(self.advantage_memory[traversing_player]) % 100 == 0 or len(self.advantage_memory[traversing_player]) > adv_mem_before + 50:
-                    import time
-                    import json
-                    with open('/Users/nikhileshbelulkar/Documents/mit-poker-2026/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"mccfr.py:567","message":"Advantage memory growth","data":{"advantage_memory_size":len(self.advantage_memory[traversing_player]),"player":traversing_player,"recursion_depth":getattr(self, '_recursion_depth', 0)},"timestamp":int(time.time()*1000)}) + '\n')
-                # #endregion
-
-            # #region agent log
-            self._recursion_depth = max(0, self._recursion_depth - 1)
-            # #endregion
             
             return node_value
         else:
@@ -603,22 +578,12 @@ class MCCFR:
             # Store strategy sample for strategy network (MΠ)
             # Paper: Insert (I, t, σ_t(I)) into MΠ
             if collect_deep_cfr_samples:
-                # #region agent log
-                strategy_mem_before = len(self.strategy_memory)
-                # #endregion
                 self.strategy_memory.append({
                     'infoset': infoset,
                     'iteration': self.current_iteration,
                     'strategy': dict(strategy),  # Copy the strategy
                     'player': active_player
                 })
-                # #region agent log
-                if len(self.strategy_memory) % 100 == 0 or len(self.strategy_memory) > strategy_mem_before + 50:
-                    import time
-                    import json
-                    with open('/Users/nikhileshbelulkar/Documents/mit-poker-2026/.cursor/debug.log', 'a') as f:
-                        f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"mccfr.py:586","message":"Strategy memory growth","data":{"strategy_memory_size":len(self.strategy_memory),"recursion_depth":getattr(self, '_recursion_depth', 0)},"timestamp":int(time.time()*1000)}) + '\n')
-                # #endregion
 
             # Recurse with sampled action
             next_state = state.proceed(sampled_action)
@@ -629,15 +594,6 @@ class MCCFR:
             for action in legal_actions:
                 action_key = self.action_to_key(action, state, active_player)
                 self.strategy_table[infoset][action_key] += strategy[action_key]
-
-            # #region agent log
-            self._recursion_depth = max(0, self._recursion_depth - 1)
-            call_time = time.time() - call_start
-            if call_time > 0.1:  # Log slow calls
-                import json
-                with open('/Users/nikhileshbelulkar/Documents/mit-poker-2026/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"mccfr.py:598","message":"Slow external_sampling call","data":{"call_time_sec":call_time,"recursion_depth":getattr(self, '_recursion_depth', 0),"is_terminal":is_terminal_state(state)},"timestamp":int(time.time()*1000)}) + '\n')
-            # #endregion
             
             return value
     

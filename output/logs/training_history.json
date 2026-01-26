@@ -1,14 +1,38 @@
 {
-  "iterations": [],
-  "loss_p0": [],
-  "loss_p1": [],
-  "loss_strategy": [],
-  "samples_p0": [],
-  "samples_p1": [],
-  "samples_strategy": [],
-  "time_per_iter": [],
-  "timestamps": [],
-  "loss_start_strategy": [],
-  "loss_end_strategy": [],
-  "loss_reduction_strategy": []
+  "iterations": [
+    10
+  ],
+  "loss_p0": [
+    42919910.56
+  ],
+  "loss_p1": [
+    35658084.28
+  ],
+  "loss_strategy": [
+    34059352.26
+  ],
+  "samples_p0": [
+    1517
+  ],
+  "samples_p1": [
+    11250
+  ],
+  "samples_strategy": [
+    34538
+  ],
+  "time_per_iter": [
+    4.678369045257568
+  ],
+  "timestamps": [
+    "2026-01-26T17:00:25.783669"
+  ],
+  "loss_start_strategy": [
+    30200004.0
+  ],
+  "loss_end_strategy": [
+    35578488.0
+  ],
+  "loss_reduction_strategy": [
+    -17.809547309993732
+  ]
 }

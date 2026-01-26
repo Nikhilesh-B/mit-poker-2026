@@ -137,17 +137,18 @@ class DeepCFRTrainer:
         self.total_samples_seen += 1
         
         if len(self.samples) < self.memory_limit:
-            # Memory not full - just append
+            # Memory not full - just append (O(1))
             self.samples.append(sample)
         elif self.use_reservoir_sampling:
             # Memory full - use reservoir sampling
             # Replace a random sample with probability memory_limit / total_seen
             replace_prob = self.memory_limit / self.total_samples_seen
             if random.random() < replace_prob:
-                # Replace a random existing sample
+                # Replace a random existing sample (O(1) - just assignment)
                 replace_idx = random.randint(0, len(self.samples) - 1)
                 self.samples[replace_idx] = sample
                 self.training_stats['reservoir_replacements'] += 1
+            # else: sample rejected by reservoir sampling (O(1))
         # else: memory full and not using reservoir sampling - drop the sample
     
     def add_samples(self, samples: List[TrainingSample]):

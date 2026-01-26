@@ -56,12 +56,6 @@ class NetworkMCCFRIntegration:
         Returns:
             Dictionary mapping action_key -> regret value
         """
-        # #region agent log
-        import time
-        import json
-        net_start = time.time()
-        # #endregion
-        
         # Step 1: Get infoset string
         infoset = self.mccfr.get_infoset(state, player)
         
@@ -71,13 +65,6 @@ class NetworkMCCFRIntegration:
         # Step 3: Get network prediction
         with torch.no_grad():
             network_output = self.network(cc, ah)  # Shape: [1, 9]
-        
-        # #region agent log
-        net_time = time.time() - net_start
-        if net_time > 0.01:  # Log if network inference takes > 10ms
-            with open('/Users/nikhileshbelulkar/Documents/mit-poker-2026/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"E","location":"integration.py:67","message":"Network inference during traversal","data":{"net_time_sec":net_time,"is_strategy_network":self.is_strategy_network},"timestamp":int(time.time()*1000)}) + '\n')
-        # #endregion
         
         # Step 4: Convert to MCCFR action keys
         regret_dict = map_network_output_to_actions(

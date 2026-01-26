@@ -44,72 +44,72 @@ class Player(Bot):
 
         # Default model path (look in output/models/ folder)
         if model_path is None:
-            # Path(__file__).parent / 'output' / 'models' / 'deep_cfr_model.pt'
-            # '/Users/nikhileshbelulkar/Documents/mit-poker-2026/output/models/train_v1_iter_60.pt'
-            model_path = Path(__file__).parent / 'output' / \
-                'models' / 'deep_cfr_model.pt'
+            raise Exception("Model path is not provided cannot run")
         else:
             model_path = Path(model_path)
 
-        # Try to load the model
-        if model_path.exists():
-            try:
-                print(f"Loading Deep CFR model from {model_path}...")
-                model_data = torch.load(model_path, map_location='cpu')
+        # Try to load the model - fail hard if it doesn't work
+        if not model_path.exists():
+            raise FileNotFoundError(
+                f"Model file not found: {model_path}\n"
+                f"Train a model first with: python train_model.py\n"
+                f"Or specify a model with: --model <filename>"
+            )
+        
+        try:
+            print(f"Loading Deep CFR model from {model_path}...")
+            model_data = torch.load(model_path, map_location='cpu')
 
-                # Get network configuration
-                network_dim = model_data.get('network_dim', 256)
+            # Get network configuration
+            network_dim = model_data.get('network_dim', 256)
 
-                # Create network
-                self.network = DeepCFRModule(
-                    nhandcards=3,
-                    nboardcards=5,
-                    n_action_history=20,
-                    nresponses=9,
-                    dim=network_dim
-                )
+            # Create network
+            self.network = DeepCFRModule(
+                nhandcards=3,
+                nboardcards=5,
+                n_action_history=20,
+                nresponses=9,
+                dim=network_dim
+            )
 
-                # Load weights - prefer strategy network (average strategy for play)
-                if 'strategy_network_state_dict' in model_data:
-                    self.network.load_state_dict(
-                        model_data['strategy_network_state_dict'])
-                elif 'network_state_dict' in model_data:
-                    self.network.load_state_dict(
-                        model_data['network_state_dict'])
-                else:
-                    raise ValueError(
-                        "No valid network weights found in model file")
-                self.network.eval()  # Set to evaluation mode
+            # Load weights - prefer strategy network (average strategy for play)
+            if 'strategy_network_state_dict' in model_data:
+                self.network.load_state_dict(
+                    model_data['strategy_network_state_dict'])
+            elif 'network_state_dict' in model_data:
+                self.network.load_state_dict(
+                    model_data['network_state_dict'])
+            else:
+                raise ValueError(
+                    "No valid network weights found in model file")
+            self.network.eval()  # Set to evaluation mode
 
-                # Create MCCFR instance (needed for integration)
-                self.mccfr = MCCFR()
+            # Create MCCFR instance (needed for integration)
+            self.mccfr = MCCFR()
 
-                # Create integration
-                self.integration = NetworkMCCFRIntegration(
-                    network=self.network,
-                    mccfr=self.mccfr
-                )
+            # Create integration
+            self.integration = NetworkMCCFRIntegration(
+                network=self.network,
+                mccfr=self.mccfr
+            )
 
-                self.model_loaded = True
+            self.model_loaded = True
 
-                print(f"✓ Deep CFR Model Loaded!")
-                print(f"  Network dim: {network_dim}")
-                if 'final_loss' in model_data and model_data['final_loss'] is not None:
-                    print(f"  Training loss: {model_data['final_loss']:,.0f}")
-                if 'training_samples' in model_data:
-                    print(
-                        f"  Training samples: {model_data['training_samples']}")
-                print(f"  Ready to play with Nash equilibrium strategy!")
+            print(f"✓ Deep CFR Model Loaded!")
+            print(f"  Network dim: {network_dim}")
+            if 'final_loss' in model_data and model_data['final_loss'] is not None:
+                print(f"  Training loss: {model_data['final_loss']:,.0f}")
+            if 'training_samples' in model_data:
+                print(
+                    f"  Training samples: {model_data['training_samples']}")
+            print(f"  Ready to play with Nash equilibrium strategy!")
 
-            except Exception as e:
-                print(f"✗ Failed to load model: {e}")
-                import traceback
-                traceback.print_exc()
-                print("Falling back to random play")
-        else:
-            print(f"✗ Model file not found: {model_path}")
-            print("Train a model first with: python train_model.py")
-            print("Falling back to random play")
+        except Exception as e:
+            # Re-raise with more context - don't silently fail
+            raise RuntimeError(
+                f"Failed to load Deep CFR model from {model_path}: {e}\n"
+                f"Make sure the model file is valid and contains the required weights."
+            ) from e
 
     def handle_new_round(self, game_state, round_state, active):
         """
@@ -135,32 +135,31 @@ class Player(Bot):
         Returns:
             Action to take
         """
+        # Get legal actions
+        legal_action_types = round_state.legal_actions()
+
+        if not legal_action_types:
+            # Should never happen, but handle gracefully
+            return CheckAction()
+
+        # Model must be loaded - fail hard if not
+        if not self.model_loaded or self.integration is None:
+            raise RuntimeError(
+                "Deep CFR model not loaded! Cannot play without a trained model.\n"
+                "Make sure the model was successfully loaded during initialization."
+            )
+
+        # Use network to select action
         try:
-            # Get legal actions
-            legal_action_types = round_state.legal_actions()
-
-            if not legal_action_types:
-                # Should never happen, but handle gracefully
-                return CheckAction()
-
-            # If model not loaded, fall back to random
-            if not self.model_loaded or self.integration is None:
-                return self._random_action(round_state, legal_action_types)
-
-            # Use network to select action
             action = self.integration.select_network_action(
                 round_state, active)
-
             return action
-
         except Exception as e:
-            # If anything fails, fall back to random play
-            print(f"Error in get_action: {e}")
-            import traceback
-            traceback.print_exc()
-
-            # Safe fallback
-            return self._random_action(round_state, round_state.legal_actions())
+            # Re-raise with context - don't silently fall back to random
+            raise RuntimeError(
+                f"Error selecting action with Deep CFR model: {e}\n"
+                f"This indicates a problem with the model or integration."
+            ) from e
 
     def _random_action(self, round_state, legal_action_types):
         """Fallback to random legal action."""

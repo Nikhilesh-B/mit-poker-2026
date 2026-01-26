@@ -672,4 +672,16 @@ class Game():
 
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description='MIT Pokerbots Game Engine')
+    parser.add_argument('--model', type=str, default=None,
+                        help='Deep CFR model filename (from deep_CFR_vNB_integration/output/models/)')
+    args = parser.parse_args()
+    
+    # Set environment variable for Deep CFR player to pick up
+    if args.model:
+        model_path = f"deep_CFR_vNB_integration/output/models/{args.model}"
+        os.environ['DEEP_CFR_MODEL_PATH'] = model_path
+        print(f"Using Deep CFR model: {model_path}")
+    
     Game().run()

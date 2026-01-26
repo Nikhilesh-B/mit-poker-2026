@@ -60,6 +60,9 @@ def train_model(
         sgd_iterations: SGD steps per training session (paper: 4000-32000)
         verbose: Print progress
     """
+    # Ensure output directory exists
+    os.makedirs(os.path.dirname(output_path) or 'output/models', exist_ok=True)
+    
     # Initialize training monitor
     monitor = TrainingMonitor(
         log_dir="output/logs",
@@ -132,13 +135,14 @@ def train_model(
             # Clear the line and show completion for non-training iterations
             print(f"\rIter {i+1:4d}/{iterations} - Collected {result.get('traversals', 0)} samples\033[K")
             
-            # Check if this is the best model
-            avg_loss = (result.get('loss_p0', 0) + result.get('loss_p1', 0)) / 2
-            is_best = avg_loss > 0 and avg_loss < monitor.best_loss
-            
-            # Save checkpoint
-            if (i + 1) % checkpoint_every == 0:
-                monitor.save_checkpoint(deep_cfr, i + 1, is_best=is_best)
+        # Check if this is the best model
+        avg_loss = (result.get('loss_p0', 0) + result.get('loss_p1', 0)) / 2
+        is_best = avg_loss > 0 and avg_loss < monitor.best_loss
+        
+        # Save checkpoint with playable model
+        if (i + 1) % checkpoint_every == 0:
+            monitor.save_checkpoint(deep_cfr, i + 1, is_best=is_best, 
+                                   output_path=output_path)
     
     # Training complete
     monitor.log_training_complete()

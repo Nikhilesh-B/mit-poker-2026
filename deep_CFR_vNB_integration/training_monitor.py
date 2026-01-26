@@ -192,7 +192,8 @@ class TrainingMonitor:
 
         print(f"{'='*60}\n")
 
-    def save_checkpoint(self, deep_cfr, iteration: int, is_best: bool = False):
+    def save_checkpoint(self, deep_cfr, iteration: int, is_best: bool = False, 
+                        output_path: str = None):
         """
         Save model checkpoint.
 
@@ -200,6 +201,8 @@ class TrainingMonitor:
             deep_cfr: DeepCFR instance
             iteration: Current iteration
             is_best: Whether this is the best model so far
+            output_path: Base output path (e.g., 'output/models/my_model.pt')
+                        Checkpoints will be named 'my_model_iter_50.pt', etc.
         """
         checkpoint = {
             'iteration': iteration,
@@ -216,7 +219,7 @@ class TrainingMonitor:
             }
         }
 
-        # Save periodic checkpoint
+        # Save periodic checkpoint (for resuming training)
         checkpoint_path = os.path.join(
             self.checkpoint_dir,
             f"checkpoint_iter_{iteration}.pt"
@@ -232,6 +235,23 @@ class TrainingMonitor:
         # Save latest
         latest_path = os.path.join(self.checkpoint_dir, "latest_model.pt")
         torch.save(checkpoint, latest_path)
+        
+        # Save player-compatible model file (can be used directly with engine.py --model)
+        if output_path:
+            # Create name based on output path: my_model.pt -> my_model_iter_50.pt
+            base_path = output_path.rsplit('.pt', 1)[0]
+            playable_path = f"{base_path}_iter_{iteration}.pt"
+            
+            playable_model = {
+                'strategy_network_state_dict': deep_cfr.strategy_network.state_dict(),
+                'network_p0_state_dict': deep_cfr.networks[0].state_dict(),
+                'network_p1_state_dict': deep_cfr.networks[1].state_dict(),
+                'network_dim': deep_cfr.network_dim,
+                'iterations': iteration,
+                'training_samples': self.history['samples_strategy'][-1] if self.history['samples_strategy'] else 0,
+            }
+            torch.save(playable_model, playable_path)
+            print(f"  [Saved playable model: {playable_path}]")
 
     def load_checkpoint(self, deep_cfr, checkpoint_path: str) -> int:
         """

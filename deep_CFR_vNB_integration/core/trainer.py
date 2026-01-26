@@ -187,7 +187,67 @@ class DeepCFRTrainer:
         samples_after = len(self.samples)
         return samples_after - samples_before
     
-    def prepare_batch(self, batch_samples: List[TrainingSample]) -> Tuple[List, List, torch.Tensor, torch.Tensor]:
+    def _get_legal_action_mask(self, street: int, target_regrets: Dict[str, float] = None) -> List[float]:
+        """
+        Get a mask indicating which actions are legal for a given situation.
+        
+        Actions: [DISCARD_0, DISCARD_1, DISCARD_2, CHECK, CALL, FOLD, RAISE_S, RAISE_M, RAISE_L]
+        
+        Per the "Toss or Hold'em" rules, betting and discards are NEVER legal simultaneously:
+        - Preflop betting: betting ONLY
+        - Discard round (after flop dealt, before flop betting): discards ONLY  
+        - Flop/Turn/River betting: betting ONLY
+        
+        We determine which phase by checking the sample's target actions.
+        
+        Args:
+            street: Street number (0-3) - used as fallback
+            target_regrets: Dict of action -> value from the sample (used to detect phase)
+        
+        Returns:
+            List of 9 floats (1.0 for legal, 0.0 for illegal)
+        """
+        if target_regrets:
+            action_keys = set(target_regrets.keys())
+            discard_keys = {'DISCARD_0', 'DISCARD_1', 'DISCARD_2'}
+            
+            has_discards = bool(action_keys & discard_keys)
+            
+            if has_discards:
+                # Discard phase: ONLY discard actions legal
+                return [1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            else:
+                # Betting phase: ONLY betting actions legal
+                return [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+        
+        # Fallback based on street (shouldn't happen with proper samples)
+        if street == 0:
+            # Preflop is typically betting
+            return [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+        else:
+            # Flop/Turn/River: betting only
+            return [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    
+    def _extract_street(self, infoset: str) -> int:
+        """
+        Extract street number from infoset string.
+        
+        Infoset format: "S{street}|H:...|B:...|A:..."
+        
+        Args:
+            infoset: Infoset string
+        
+        Returns:
+            Street number (0-3)
+        """
+        try:
+            # Format: "S0|H:..." or "S1|H:..."
+            return int(infoset[1])
+        except (IndexError, ValueError):
+            # Default to street 0 if parsing fails
+            return 0
+    
+    def prepare_batch(self, batch_samples: List[TrainingSample]) -> Tuple[List, List, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Prepare a batch of samples for training.
         
@@ -195,7 +255,7 @@ class DeepCFRTrainer:
             batch_samples: List of TrainingSample objects
         
         Returns:
-            Tuple of (canonical_cards_list, action_history_list, target_tensor, iteration_weights)
+            Tuple of (canonical_cards_list, action_history_list, target_tensor, iteration_weights, legal_mask)
         """
         # Parse infosets
         infosets = [sample.infoset for sample in batch_samples]
@@ -208,6 +268,8 @@ class DeepCFRTrainer:
         
         target_tensors = []
         iterations = []
+        legal_masks = []
+        
         for sample in batch_samples:
             target_tensor = regrets_dict_to_tensor(
                 sample.target_regrets,
@@ -217,6 +279,10 @@ class DeepCFRTrainer:
             )
             target_tensors.append(target_tensor)
             iterations.append(sample.iteration)
+            
+            # Create legal action mask based on street AND the actual actions in the sample
+            street = self._extract_street(sample.infoset)
+            legal_masks.append(self._get_legal_action_mask(street, sample.target_regrets))
         
         # Stack into batch
         target_batch = torch.stack(target_tensors)  # [batch_size, 9]
@@ -225,7 +291,10 @@ class DeepCFRTrainer:
         # Paper: weight each sample by iteration t' (later iterations weighted more)
         iteration_weights = torch.tensor(iterations, dtype=torch.float32)  # [batch_size]
         
-        return cc_list, ah_list, target_batch, iteration_weights
+        # Create legal action mask tensor
+        legal_mask = torch.tensor(legal_masks, dtype=torch.float32)  # [batch_size, 9]
+        
+        return cc_list, ah_list, target_batch, iteration_weights, legal_mask
     
     def train_on_samples(self, num_epochs: int = 1, use_fixed_iterations: bool = True,
                          use_linear_weighting: bool = True, verbose: bool = True,
@@ -291,12 +360,13 @@ class DeepCFRTrainer:
                     if len(batch_samples) == 0:
                         continue
                     
-                    # Prepare batch (now includes iteration weights)
-                    cc_list, ah_list, target_batch, iter_weights = self.prepare_batch(batch_samples)
+                    # Prepare batch (now includes iteration weights and legal mask)
+                    cc_list, ah_list, target_batch, iter_weights, legal_mask = self.prepare_batch(batch_samples)
                     
                     # Move tensors to training device
                     target_batch = target_batch.to(self.training_device)
                     iter_weights = iter_weights.to(self.training_device)
+                    legal_mask = legal_mask.to(self.training_device)
                     
                     # Forward pass (network handles internal tensor creation)
                     predictions = self.network(cc_list, ah_list)
@@ -305,18 +375,23 @@ class DeepCFRTrainer:
                     if predictions.device != target_batch.device:
                         predictions = predictions.to(target_batch.device)
                     
-                    # Compute loss with linear weighting
+                    # Compute loss with linear weighting and legal action masking
                     # Paper: L(θ) = E[(t' · Σ_a (r̃_t'(a) - V(I,a|θ))²)]
+                    # We only compute loss for LEGAL actions (e.g., no discards on flop/turn/river)
                     if use_linear_weighting:
-                        # Per-sample squared error, then weight by iteration
+                        # Per-sample squared error, masked by legal actions
                         squared_errors = (predictions - target_batch) ** 2  # [batch, 9]
-                        per_sample_loss = squared_errors.sum(dim=1)  # [batch]
+                        masked_errors = squared_errors * legal_mask  # Zero out illegal action errors
+                        per_sample_loss = masked_errors.sum(dim=1)  # [batch]
                         
                         # Weight by iteration and average
                         weighted_loss = (iter_weights * per_sample_loss).mean()
                         loss = weighted_loss
                     else:
-                        loss = self.criterion(predictions, target_batch)
+                        # Apply mask to MSE loss
+                        squared_errors = (predictions - target_batch) ** 2
+                        masked_errors = squared_errors * legal_mask
+                        loss = masked_errors.mean()
                     
                     # Track loss at key points
                     current_loss = loss.item()
@@ -361,24 +436,28 @@ class DeepCFRTrainer:
                         if len(batch_samples) == 0:
                             continue
                         
-                        cc_list, ah_list, target_batch, iter_weights = self.prepare_batch(batch_samples)
+                        cc_list, ah_list, target_batch, iter_weights, legal_mask = self.prepare_batch(batch_samples)
                         
                         # Move tensors to training device
                         target_batch = target_batch.to(self.training_device)
                         iter_weights = iter_weights.to(self.training_device)
+                        legal_mask = legal_mask.to(self.training_device)
                         
                         predictions = self.network(cc_list, ah_list)
                         
                         if predictions.device != target_batch.device:
                             predictions = predictions.to(target_batch.device)
                         
-                        # Weighted loss
+                        # Weighted loss with legal action masking
                         if use_linear_weighting:
                             squared_errors = (predictions - target_batch) ** 2
-                            per_sample_loss = squared_errors.sum(dim=1)
+                            masked_errors = squared_errors * legal_mask
+                            per_sample_loss = masked_errors.sum(dim=1)
                             loss = (iter_weights * per_sample_loss).mean()
                         else:
-                            loss = self.criterion(predictions, target_batch)
+                            squared_errors = (predictions - target_batch) ** 2
+                            masked_errors = squared_errors * legal_mask
+                            loss = masked_errors.mean()
                         
                         self.optimizer.zero_grad()
                         loss.backward()

@@ -134,9 +134,11 @@ class DeepCFR:
         self.integration = self.integrations[0]
         
         # Strategy network integration (for actual play)
+        # Strategy network outputs are logits → softmax (per paper Section 5.1)
         self.strategy_integration = NetworkMCCFRIntegration(
             network=self.strategy_network, 
-            mccfr=self.mccfr
+            mccfr=self.mccfr,
+            is_strategy_network=True
         )
         
         # Separate advantage memories per player (paper: MV,1 and MV,2)
@@ -269,13 +271,30 @@ class DeepCFR:
         
         for player in [0, 1]:
             for k in range(self.traversals_per_iter):
+                # #region agent log
+                import time
+                import json
+                traversal_start = time.time()
+                # #endregion
+                
                 # Create fresh initial state for each traversal
                 state = self.mccfr.create_initial_state()
+                
+                # #region agent log
+                with open('/Users/nikhileshbelulkar/Documents/mit-poker-2026/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"deep_cfr.py:277","message":"Traversal start","data":{"player":player,"k":k,"use_network":use_network,"iteration":self.iteration_count,"strategy_memory_size":len(self.mccfr.strategy_memory),"advantage_memory_p0":len(self.mccfr.advantage_memory[0]),"advantage_memory_p1":len(self.mccfr.advantage_memory[1])},"timestamp":int(time.time()*1000)}) + '\n')
+                # #endregion
                 
                 if use_network:
                     utility = self._cfr_with_network(state, player)
                 else:
                     utility = self.mccfr.external_sampling(state, player)
+                
+                # #region agent log
+                traversal_time = time.time() - traversal_start
+                with open('/Users/nikhileshbelulkar/Documents/mit-poker-2026/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"deep_cfr.py:290","message":"Traversal complete","data":{"player":player,"k":k,"traversal_time_sec":traversal_time,"utility":utility},"timestamp":int(time.time()*1000)}) + '\n')
+                # #endregion
                 
                 total_utility += utility
                 
@@ -296,6 +315,13 @@ class DeepCFR:
             'used_network': use_network,
             'regret_table_size': len(self.mccfr.regret_table)
         }
+        
+        # CRITICAL FIX: Collect samples and clear memory EVERY iteration
+        # Otherwise memory accumulates unbounded during traversal (causing 2-3 min slowdowns)
+        # We collect samples into trainer memory (which uses reservoir sampling),
+        # then clear MCCFR's temporary memory immediately
+        sample_counts = self._collect_samples_to_trainers()
+        result.update(sample_counts)
         
         # Train network if scheduled
         if self.should_train():
@@ -327,6 +353,59 @@ class DeepCFR:
         
         return utility
     
+    def _collect_samples_to_trainers(self):
+        """
+        Collect samples from MCCFR memory into trainer memory.
+        
+        This should be called EVERY iteration to prevent unbounded memory growth.
+        Trainer memory uses reservoir sampling, so it's safe to call frequently.
+        
+        Returns:
+            Dictionary with counts of new samples collected
+        """
+        from core.trainer import TrainingSample
+        
+        new_samples_p0 = 0
+        new_samples_p1 = 0
+        new_strategy_samples = 0
+        
+        # Collect advantage samples
+        for player in [0, 1]:
+            for sample_dict in self.mccfr.get_advantage_samples(player):
+                sample = TrainingSample(
+                    infoset=sample_dict['infoset'],
+                    target_regrets=sample_dict['regrets'],
+                    player=sample_dict['player'],
+                    iteration=sample_dict['iteration']
+                )
+                self.trainers[player].add_sample(sample)  # Uses reservoir sampling
+                if player == 0:
+                    new_samples_p0 += 1
+                else:
+                    new_samples_p1 += 1
+        
+        # Collect strategy samples
+        for sample_dict in self.mccfr.get_strategy_samples():
+            sample = TrainingSample(
+                infoset=sample_dict['infoset'],
+                target_regrets=sample_dict['strategy'],  # Actually strategy probs
+                player=sample_dict['player'],
+                iteration=sample_dict['iteration']
+            )
+            self.strategy_trainer.add_sample(sample)  # Uses reservoir sampling
+            new_strategy_samples += 1
+        
+        # Clear MCCFR's temporary memory immediately after collecting
+        # This prevents unbounded growth during traversal
+        self.mccfr.clear_advantage_memory()
+        self.mccfr.clear_strategy_memory()
+        
+        return {
+            'new_samples_p0': new_samples_p0,
+            'new_samples_p1': new_samples_p1,
+            'new_strategy_samples': new_strategy_samples
+        }
+    
     def _train_network(self, traversing_player: int = None, 
                        reinitialize: bool = True) -> Dict:
         """
@@ -338,44 +417,18 @@ class DeepCFR:
         - Uses MCCFR advantage memory with instantaneous regrets
         
         Order of operations:
-        1. Collect samples from MCCFR → trainer memory
-        2. Reinitialize network (preserves samples)
-        3. Train on all accumulated samples
+        1. Reinitialize network (preserves samples in trainer)
+        2. Train on all accumulated samples
+        
+        Note: Samples are collected in _collect_samples_to_trainers() which is
+        called every iteration to prevent memory accumulation.
         
         Args:
             traversing_player: If specified, only train that player's network
             reinitialize: If True, reinitialize networks from scratch (paper's approach)
         """
-        from core.trainer import TrainingSample
         
-        # STEP 1: Collect samples from MCCFR's advantage memory FIRST
-        # (before reinitializing, so samples are preserved)
-        # Uses reservoir sampling when memory is full
-        new_samples_p0 = 0
-        new_samples_p1 = 0
-        
-        for player in [0, 1]:
-            for sample_dict in self.mccfr.get_advantage_samples(player):
-                sample = TrainingSample(
-                    infoset=sample_dict['infoset'],
-                    target_regrets=sample_dict['regrets'],
-                    player=sample_dict['player'],
-                    iteration=sample_dict['iteration']  # For linear weighting
-                )
-                
-                # Add to appropriate player's trainer (uses reservoir sampling)
-                trainer = self.trainers[player]
-                trainer.add_sample(sample)
-                
-                if player == 0:
-                    new_samples_p0 += 1
-                else:
-                    new_samples_p1 += 1
-        
-        # Clear MCCFR's advantage memory after collecting
-        self.mccfr.clear_advantage_memory()
-        
-        # STEP 2: Reinitialize networks from scratch (paper's approach)
+        # STEP 1: Reinitialize networks from scratch (paper's approach)
         # This preserves samples but creates fresh network weights
         if reinitialize:
             if traversing_player is not None:
@@ -384,8 +437,9 @@ class DeepCFR:
                 self.reinitialize_all_networks()
         
         # Note: Memory limit is now enforced via reservoir sampling in trainer.add_sample()
+        # Samples are already collected in _collect_samples_to_trainers() called every iteration
         
-        # STEP 3: Train both networks (or just the traversing player's network)
+        # STEP 2: Train both networks (or just the traversing player's network)
         results = {}
         
         players_to_train = [traversing_player] if traversing_player is not None else [0, 1]
@@ -431,7 +485,6 @@ class DeepCFR:
         
         return {
             'trained': True,
-            'new_samples': new_samples_p0 + new_samples_p1,
             'new_samples_p0': new_samples_p0,
             'new_samples_p1': new_samples_p1,
             'total_samples': samples_p0 + samples_p1,
@@ -463,26 +516,10 @@ class DeepCFR:
         - Targets are strategy probabilities σ_t(I), NOT regrets
         - Uses linear weighting by iteration t'
         - NOT reinitialized (accumulates knowledge across iterations)
+        
+        Note: Strategy samples are already collected in _collect_samples_to_trainers()
+        which is called every iteration. This method just trains on accumulated samples.
         """
-        from core.trainer import TrainingSample
-        
-        # Collect strategy samples from MCCFR (uses reservoir sampling)
-        new_samples = 0
-        for sample_dict in self.mccfr.get_strategy_samples():
-            # Convert strategy dict to "regrets" format for the trainer
-            # The trainer expects target_regrets, but for strategy network,
-            # these are actually strategy probabilities
-            sample = TrainingSample(
-                infoset=sample_dict['infoset'],
-                target_regrets=sample_dict['strategy'],  # Actually strategy probs
-                player=sample_dict['player'],
-                iteration=sample_dict['iteration']
-            )
-            self.strategy_trainer.add_sample(sample)  # Uses reservoir sampling
-            new_samples += 1
-        
-        # Clear MCCFR's strategy memory after collecting
-        self.mccfr.clear_strategy_memory()
         
         # Train (NOT from scratch - accumulates)
         if len(self.strategy_trainer.samples) > 0:

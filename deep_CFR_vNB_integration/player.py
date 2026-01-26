@@ -88,9 +88,11 @@ class Player(Bot):
             self.mccfr = MCCFR()
 
             # Create integration
+            # Player uses strategy network (average strategy), so outputs are logits → softmax
             self.integration = NetworkMCCFRIntegration(
                 network=self.network,
-                mccfr=self.mccfr
+                mccfr=self.mccfr,
+                is_strategy_network=True  # Strategy network outputs are logits (per paper Section 5.1)
             )
 
             self.model_loaded = True

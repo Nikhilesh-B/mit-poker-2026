@@ -6,6 +6,7 @@ It demonstrates the full pipeline: state → network → regret matching → act
 """
 
 import torch
+import torch.nn.functional as F
 from typing import Dict, List, Tuple
 from network.model import DeepCFRModule
 from utils.infoset_parser import parse_infoset_to_network_input
@@ -28,16 +29,20 @@ class NetworkMCCFRIntegration:
     4. Compare network predictions vs tabular MCCFR
     """
     
-    def __init__(self, network: DeepCFRModule, mccfr: MCCFR):
+    def __init__(self, network: DeepCFRModule, mccfr: MCCFR, is_strategy_network: bool = False):
         """
         Initialize integration.
         
         Args:
             network: DeepCFR network for regret prediction
             mccfr: MCCFR instance for game logic
+            is_strategy_network: If True, network outputs are logits that should be 
+                                converted to probabilities via softmax (per paper Section 5.1).
+                                If False, outputs are treated as regrets for regret matching.
         """
         self.network = network
         self.mccfr = mccfr
+        self.is_strategy_network = is_strategy_network
         self.network.eval()  # Set to evaluation mode
     
     def get_network_regrets(self, state, player: int) -> Dict[str, float]:
@@ -51,6 +56,12 @@ class NetworkMCCFRIntegration:
         Returns:
             Dictionary mapping action_key -> regret value
         """
+        # #region agent log
+        import time
+        import json
+        net_start = time.time()
+        # #endregion
+        
         # Step 1: Get infoset string
         infoset = self.mccfr.get_infoset(state, player)
         
@@ -60,6 +71,13 @@ class NetworkMCCFRIntegration:
         # Step 3: Get network prediction
         with torch.no_grad():
             network_output = self.network(cc, ah)  # Shape: [1, 9]
+        
+        # #region agent log
+        net_time = time.time() - net_start
+        if net_time > 0.01:  # Log if network inference takes > 10ms
+            with open('/Users/nikhileshbelulkar/Documents/mit-poker-2026/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"E","location":"integration.py:67","message":"Network inference during traversal","data":{"net_time_sec":net_time,"is_strategy_network":self.is_strategy_network},"timestamp":int(time.time()*1000)}) + '\n')
+        # #endregion
         
         # Step 4: Convert to MCCFR action keys
         regret_dict = map_network_output_to_actions(
@@ -81,9 +99,12 @@ class NetworkMCCFRIntegration:
         
         return regret_dict
     
-    def get_network_strategy(self, state, player: int) -> Dict[str, float]:
+    def get_strategy_network_probabilities(self, state, player: int) -> Dict[str, float]:
         """
-        Get strategy (action probabilities) using network regrets.
+        Get probabilities directly from strategy network (with softmax).
+        
+        Per paper Section 5.1: "In the average strategy network, outputs are 
+        interpreted as logits of the probability distribution over actions."
         
         Args:
             state: Current RoundState
@@ -92,6 +113,43 @@ class NetworkMCCFRIntegration:
         Returns:
             Dictionary mapping action_key -> probability
         """
+        # Get raw network output (logits)
+        regret_dict = self.get_network_regrets(state, player)
+        
+        # Get legal actions
+        legal_actions = self.mccfr.get_legal_actions_list(state)
+        
+        # Convert to tensor for softmax
+        action_keys = [self.mccfr.action_to_key(a, state, player) for a in legal_actions]
+        logits = torch.tensor([regret_dict.get(key, 0.0) for key in action_keys], dtype=torch.float32)
+        
+        # Apply softmax to convert logits to probabilities
+        probs = F.softmax(logits, dim=0)
+        
+        # Convert back to dictionary
+        strategy = {key: float(probs[i]) for i, key in enumerate(action_keys)}
+        
+        return strategy
+    
+    def get_network_strategy(self, state, player: int) -> Dict[str, float]:
+        """
+        Get strategy (action probabilities) using network outputs.
+        
+        For strategy networks: applies softmax to logits (per paper Section 5.1).
+        For value networks: applies regret matching to regrets.
+        
+        Args:
+            state: Current RoundState
+            player: Player index (0 or 1)
+        
+        Returns:
+            Dictionary mapping action_key -> probability
+        """
+        # Strategy network: outputs are logits → softmax → probabilities
+        if self.is_strategy_network:
+            return self.get_strategy_network_probabilities(state, player)
+        
+        # Value network: outputs are regrets → regret matching → probabilities
         # Get network regrets
         regret_dict = self.get_network_regrets(state, player)
         
@@ -216,8 +274,8 @@ def test_single_state_integration():
     mccfr = MCCFR()
     state = mccfr.create_initial_state()
     
-    # Create integration
-    integration = NetworkMCCFRIntegration(network, mccfr)
+    # Create integration (default: value network, uses regret matching)
+    integration = NetworkMCCFRIntegration(network, mccfr, is_strategy_network=False)
     
     # Test 1: Get network regrets
     print("\n[1] Getting network regrets...")

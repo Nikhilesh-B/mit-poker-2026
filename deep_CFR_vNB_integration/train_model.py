@@ -31,9 +31,9 @@ def train_model(
     iterations: int = 500,
     network_dim: int = 256,
     learning_rate: float = 0.001,
-    batch_size: int = 2000,
-    use_network_after: int = 100,
-    train_every: int = 10,
+    batch_size: int = 10000,  # Paper: 10,000
+    use_network_after: int = 0,  # Paper: use network from iteration 1
+    train_every: int = 1,  # Paper: train after EVERY iteration
     train_epochs: int = 5,
     output_path: str = "deep_cfr_model.pt",
     checkpoint_every: int = 50,
@@ -60,13 +60,25 @@ def train_model(
         sgd_iterations: SGD steps per training session (paper: 4000-32000)
         verbose: Print progress
     """
-    # Ensure output directory exists
-    os.makedirs(os.path.dirname(output_path) or 'output/models', exist_ok=True)
+    # Get project root directory (parent of deep_CFR_vNB_integration)
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     
-    # Initialize training monitor
+    # Ensure output_path has proper directory (normalize if just filename given)
+    if not os.path.dirname(output_path) or not os.path.isabs(output_path):
+        # Use project root's output/models directory
+        basename = os.path.basename(output_path) if os.path.dirname(output_path) else output_path
+        output_path = os.path.join(project_root, 'output/models', basename)
+    # Ensure .pt extension
+    if not output_path.endswith('.pt'):
+        output_path = output_path + '.pt'
+    
+    # Ensure output directory exists
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    
+    # Initialize training monitor with project root paths
     monitor = TrainingMonitor(
-        log_dir="output/logs",
-        checkpoint_dir="output/checkpoints"
+        log_dir=os.path.join(project_root, "output/logs"),
+        checkpoint_dir=os.path.join(project_root, "output/checkpoints")
     )
     
     # Create Deep CFR with paper-aligned settings
@@ -151,7 +163,7 @@ def train_model(
     monitor.log_training_complete()
     
     # Save final model
-    os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
     print(f"\nSaving final model to {output_path}...")
     
     # Save the STRATEGY network (this is what player.py should use)

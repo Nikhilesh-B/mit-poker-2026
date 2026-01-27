@@ -45,11 +45,11 @@ class DeepCFR:
         self,
         network_dim: int = 256,
         learning_rate: float = 0.001,
-        batch_size: int = 2000,  # Increased from 32 (HULH uses 20,000)
-        use_network_after: int = 100,
-        train_every: int = 10,
+        batch_size: int = 10000,  # Paper: 10,000 (HULH uses 20,000)
+        use_network_after: int = 0,  # Paper: use network from iteration 1 (initialized to 0)
+        train_every: int = 1,  # Paper: train after EVERY iteration
         train_epochs: int = 5,
-        memory_limit: int = 2000000,  # 2M samples per player (paper uses 40M)
+        memory_limit: int = 10000000,  # 10M samples per player (paper uses 40M)
         training_device: str = "auto",  # "auto", "mps", "cuda", or "cpu"
         traversals_per_iter: int = 1000,  # Paper uses 10,000 for FHP
         sgd_iterations: int = 4000  # Paper uses 32,000 for HULH, 4,000 for FHP
@@ -175,7 +175,7 @@ class DeepCFR:
         """Create a new network instance."""
         return DeepCFRModule(
             nhandcards=3,
-            nboardcards=5,
+            nboardcards=6,  # 2 flop + 2 discards + turn + river = 6 max
             n_action_history=20,
             nresponses=9,
             dim=dim
@@ -322,17 +322,27 @@ class DeepCFR:
         """
         CFR iteration using network for regret predictions.
 
-        This is a hybrid approach:
-        - Use network to predict regrets
-        - Still update regret table with actual outcomes
-        - Network learns from the accumulated regret table
+        This is the proper Deep CFR algorithm per the paper:
+        - Use network to predict regrets at each decision point
+        - Strategy is computed from network predictions via regret matching
+        - Samples are collected for training
+        
+        The key insight is that the network generalizes across similar infosets,
+        allowing exploration of states that tabular CFR couldn't reach.
         """
-        # For now, we'll use the standard MCCFR but with network-based
-        # action selection for the traversing player
-
-        # This is a simplified version - we still collect data in regret table
-        # but use network to inform decisions
-        utility = self.mccfr.external_sampling(state, traversing_player)
+        # Build network integrations dict for both players
+        network_integrations = {
+            0: self.integrations[0],
+            1: self.integrations[1]
+        }
+        
+        # Use the network-guided external sampling
+        utility = self.mccfr.external_sampling_with_network(
+            state, 
+            traversing_player, 
+            network_integrations,
+            collect_deep_cfr_samples=True
+        )
 
         return utility
 
@@ -399,6 +409,7 @@ class DeepCFR:
         # This prevents unbounded growth during traversal
         self.mccfr.clear_advantage_memory()
         self.mccfr.clear_strategy_memory()
+        self.mccfr.clear_infoset_cache()  # Clear cache to free memory
 
         return {
             'new_samples_p0': new_samples_p0,

@@ -251,7 +251,7 @@ def test_single_state_integration():
     # Create network
     network = DeepCFRModule(
         nhandcards=3,
-        nboardcards=5,
+        nboardcards=6,  # 2 flop + 2 discards + turn + river = 6 max
         n_action_history=20,
         nresponses=9,
         dim=256

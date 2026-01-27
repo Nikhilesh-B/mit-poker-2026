@@ -224,6 +224,10 @@ class TrainingMonitor:
             self.checkpoint_dir,
             f"checkpoint_iter_{iteration}.pt"
         )
+        
+        # Ensure checkpoint directory exists
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
+        
         torch.save(checkpoint, checkpoint_path)
 
         # Save best model
@@ -241,6 +245,11 @@ class TrainingMonitor:
             # Create name based on output path: my_model.pt -> my_model_iter_50.pt
             base_path = output_path.rsplit('.pt', 1)[0]
             playable_path = f"{base_path}_iter_{iteration}.pt"
+            
+            # Ensure playable path directory exists
+            playable_dir = os.path.dirname(playable_path)
+            if playable_dir:
+                os.makedirs(playable_dir, exist_ok=True)
             
             playable_model = {
                 'strategy_network_state_dict': deep_cfr.strategy_network.state_dict(),

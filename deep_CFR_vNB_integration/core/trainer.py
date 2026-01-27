@@ -59,10 +59,10 @@ class DeepCFRTrainer:
         network: DeepCFRModule,
         mccfr: MCCFR,
         learning_rate: float = 0.001,
-        batch_size: int = 2000,  # Paper uses 20,000 for HULH, start smaller
+        batch_size: int = 10000,  # Paper: 10,000 (HULH uses 20,000)
         max_grad_norm: float = 1.0,  # Paper: gradient norm clipping to 1
         sgd_iterations: int = 4000,  # Paper: 32,000 for HULH, start smaller
-        memory_limit: int = 2000000,  # Paper uses 40M, start with 2M
+        memory_limit: int = 10000000,  # Paper uses 40M, we use 10M
         use_reservoir_sampling: bool = True,  # Paper: reservoir sampling is crucial
         training_device: str = "auto"  # "auto", "mps", "cuda", or "cpu"
     ):
@@ -553,7 +553,7 @@ def test_basic_training():
     # Create network and MCCFR
     network = DeepCFRModule(
         nhandcards=3,
-        nboardcards=5,
+        nboardcards=6,  # 2 flop + 2 discards + turn + river = 6 max
         n_action_history=20,
         nresponses=9,
         dim=256

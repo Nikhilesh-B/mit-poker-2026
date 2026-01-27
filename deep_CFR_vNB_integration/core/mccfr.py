@@ -597,6 +597,113 @@ class MCCFR:
                 self.strategy_table[infoset][action_key] += strategy[action_key]
             
             return value
+
+    def external_sampling_with_network(self, state, traversing_player: int,
+                                        network_integrations: dict,
+                                        collect_deep_cfr_samples: bool = True) -> float:
+        """
+        External sampling MCCFR using neural networks for regret prediction.
+        
+        This is the proper Deep CFR algorithm per the paper:
+        - At each infoset, use the NETWORK to predict regrets
+        - Apply regret matching to get strategy
+        - Explore according to that strategy
+        
+        Args:
+            state: Current game state (RoundState or TerminalState)
+            traversing_player: Player whose regrets we're updating (0 or 1)
+            network_integrations: Dict mapping player -> NetworkMCCFRIntegration
+                                  {0: integration_p0, 1: integration_p1}
+            collect_deep_cfr_samples: If True, collect samples for training
+            
+        Returns:
+            Utility value for traversing player at this node
+        """
+        # Terminal state: return utility
+        if is_terminal_state(state):
+            return float(state.deltas[traversing_player])
+        
+        # Get information set
+        active_player = state.button % 2
+        state_id = id(state)
+        
+        if state_id in self.infoset_cache:
+            infoset = self.infoset_cache[state_id]
+        else:
+            infoset = self.get_infoset(state, active_player)
+            self.infoset_cache[state_id] = infoset
+        
+        # Get legal actions
+        legal_actions = self.get_legal_actions_list(state)
+        if not legal_actions:
+            return 0.0
+        
+        # KEY DIFFERENCE: Use NETWORK to predict regrets, not cumulative table!
+        # Paper Algorithm 2: "Compute strategy σt(I) from predicted advantages V(I(h), a|θp)"
+        network_integration = network_integrations[active_player]
+        predicted_regrets = network_integration.get_network_regrets(state, active_player)
+        
+        # Get strategy via regret matching on network predictions
+        strategy = self.regret_matching(
+            predicted_regrets,  # Network predictions, not self.regret_table!
+            legal_actions,
+            state,
+            active_player
+        )
+        
+        # Check if it's the traversing player's turn
+        if active_player == traversing_player:
+            # Traversing player: compute regrets for ALL actions
+            action_values = {}
+            node_value = 0.0
+            
+            # Compute value of each action (explore all)
+            for action in legal_actions:
+                action_key = self.action_to_key(action, state, active_player)
+                next_state = state.proceed(action)
+                action_values[action_key] = self.external_sampling_with_network(
+                    next_state, traversing_player, network_integrations, collect_deep_cfr_samples
+                )
+                node_value += strategy[action_key] * action_values[action_key]
+            
+            # Compute INSTANTANEOUS regrets
+            # Paper: r̃_t(I,a) = v(a) - Σ σ(a')·v(a')
+            instantaneous_regrets = {}
+            for action in legal_actions:
+                action_key = self.action_to_key(action, state, active_player)
+                regret = action_values[action_key] - node_value
+                instantaneous_regrets[action_key] = regret
+            
+            # Store in advantage memory for training
+            if collect_deep_cfr_samples:
+                self.advantage_memory[traversing_player].append({
+                    'infoset': infoset,
+                    'iteration': self.current_iteration,
+                    'regrets': instantaneous_regrets,
+                    'player': traversing_player
+                })
+            
+            return node_value
+        else:
+            # Opponent's turn: sample ONE action from strategy
+            action_keys = [self.action_to_key(a, state, active_player) for a in legal_actions]
+            probs = [strategy[key] for key in action_keys]
+            sampled_action = random.choices(legal_actions, weights=probs, k=1)[0]
+            
+            # Store strategy sample for strategy network (MΠ)
+            if collect_deep_cfr_samples:
+                self.strategy_memory.append({
+                    'infoset': infoset,
+                    'iteration': self.current_iteration,
+                    'strategy': dict(strategy),
+                    'player': active_player
+                })
+            
+            # Recurse with sampled action
+            next_state = state.proceed(sampled_action)
+            return self.external_sampling_with_network(
+                next_state, traversing_player, network_integrations, collect_deep_cfr_samples
+            )
     
     def set_iteration(self, iteration: int):
         """Set the current CFR iteration number (for linear weighting)."""
@@ -620,6 +727,10 @@ class MCCFR:
     def clear_strategy_memory(self):
         """Clear strategy memory."""
         self.strategy_memory = []
+    
+    def clear_infoset_cache(self):
+        """Clear infoset cache to free memory between iterations."""
+        self.infoset_cache = {}
 
     def create_initial_state(self) -> RoundState:
         """
@@ -634,13 +745,8 @@ class MCCFR:
         # Deal 3 cards to each player (MIT 2026 variant)
         hands = [deck.deal(3), deck.deal(3)]
 
-        # Randomize button position to balance sample collection between players
-        # button=0: Player 0 is small blind (acts first preflop)
-        # button=1: Player 1 is small blind (acts first preflop)
-        button = random.randint(0, 1)
-
         initial_state = RoundState(
-            button=button,
+            button=0,
             street=0,  # Preflop
             pips=[SMALL_BLIND, BIG_BLIND],
             stacks=[STARTING_STACK - SMALL_BLIND, STARTING_STACK - BIG_BLIND],

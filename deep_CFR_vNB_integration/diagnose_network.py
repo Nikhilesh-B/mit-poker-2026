@@ -293,7 +293,7 @@ def main():
         sys.exit(1)
     
     network_dim = model_data.get('network_dim', 256)
-    network = DeepCFRModule(nhandcards=3, nboardcards=5, n_action_history=20, nresponses=9, dim=network_dim)
+    network = DeepCFRModule(nhandcards=3, nboardcards=6, n_action_history=20, nresponses=9, dim=network_dim)
     network.load_state_dict(model_data['strategy_network_state_dict'])
     network.eval()
     

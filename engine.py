@@ -269,9 +269,10 @@ class Player():
     Handles subprocess and socket interactions with one player's pokerbot.
     '''
 
-    def __init__(self, name, path):
+    def __init__(self, name, path, model_path=None):
         self.name = name
         self.path = path
+        self.model_path = model_path  # Optional: model path for DeepCFR players
         self.game_clock = STARTING_GAME_CLOCK
         self.bankroll = 0
         self.commands = None
@@ -325,9 +326,15 @@ class Player():
                     server_socket.settimeout(CONNECT_TIMEOUT)
                     server_socket.listen()
                     port = server_socket.getsockname()[1]
+                    
+                    # Set model path in environment for this player's subprocess
+                    env = os.environ.copy()
+                    if self.model_path:
+                        env['DEEP_CFR_MODEL_PATH'] = self.model_path
+                    
                     proc = subprocess.Popen(self.commands['run'] + [str(port)],
                                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                            cwd=self.path)
+                                            cwd=self.path, env=env)
                     self.bot_subprocess = proc
                     # function for bot listening
 
@@ -674,15 +681,143 @@ class Game():
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='MIT Pokerbots Game Engine')
+    parser.add_argument('player1', nargs='?', default=None,
+                        help='Path to player 1 bot folder (e.g., python_skeleton_OG)')
+    parser.add_argument('player2', nargs='?', default=None,
+                        help='Path to player 2 bot folder (e.g., python_skeleton_toss_low)')
     parser.add_argument('--model', type=str, default=None,
-                        help='Deep CFR model filename (from /models)')
+                        help='Deep CFR model filename for player 2 (OG skeleton vs DeepCFR)')
+    parser.add_argument('--model1', type=str, default=None,
+                        help='Deep CFR model filename for player 1')
+    parser.add_argument('--model2', type=str, default=None,
+                        help='Deep CFR model filename for player 2')
     args = parser.parse_args()
 
-    # Set environment variable for Deep CFR player to pick up
-    # Path is relative to where player runs from (deep_CFR_vNB_integration/)
-    if args.model:
-        model_path = f"../output/models/{args.model}"
-        os.environ['DEEP_CFR_MODEL_PATH'] = model_path
-        print(f"Using Deep CFR model: {model_path}")
+    def resolve_model_path(model_arg):
+        """
+        Resolve model path with flexibility for different locations.
+        - 'model.pt' -> ../output/models/model.pt
+        - 'checkpoints/model.pt' -> ../output/checkpoints/model.pt  
+        - 'models/model.pt' -> ../output/models/model.pt
+        - Full path starting with '../' or '/' -> use as-is
+        """
+        if model_arg is None:
+            return None
+        if model_arg.startswith('../') or model_arg.startswith('/'):
+            return model_arg  # Already a full/relative path
+        if '/' in model_arg:
+            return f"../output/{model_arg}"  # e.g., checkpoints/iter_50.pt
+        return f"../output/models/{model_arg}"  # Default to models folder
+    
+    # Model paths (relative to deep_CFR_vNB_integration folder)
+    model1_path = resolve_model_path(args.model1)
+    model2_path = resolve_model_path(args.model2)
+    
+    # Legacy --model support: applies to player 2
+    if args.model and not args.model2:
+        model2_path = resolve_model_path(args.model)
 
-    Game().run()
+    def model_to_name(model_arg):
+        """Extract a clean name from model path for player naming."""
+        if not model_arg:
+            return "unknown"
+        # Get just the filename, remove .pt extension and path
+        name = os.path.basename(model_arg).replace('.pt', '')
+        # Replace problematic characters
+        return name.replace('/', '_').replace(' ', '_')
+    
+    # DeepCFR vs DeepCFR mode (both models specified, no player paths)
+    if (args.model1 and args.model2) and not args.player1 and not args.player2:
+        PLAYER_1_NAME = f"DeepCFR_{model_to_name(args.model1)}"
+        PLAYER_1_PATH = "./deep_CFR_vNB_integration"
+        PLAYER_2_NAME = f"DeepCFR_{model_to_name(args.model2)}"
+        PLAYER_2_PATH = "./deep_CFR_vNB_integration"
+        print(f"Player 1: {PLAYER_1_NAME} ({PLAYER_1_PATH}) with model {args.model1}")
+        print(f"Player 2: {PLAYER_2_NAME} ({PLAYER_2_PATH}) with model {args.model2}")
+    # If only --model (or --model2) is specified, default to OG skeleton vs DeepCFR
+    elif (args.model or args.model2) and not args.player1 and not args.player2:
+        PLAYER_1_NAME = "SkeletonBot"
+        PLAYER_1_PATH = "./python_skeleton_OG"
+        model_arg = args.model2 or args.model
+        PLAYER_2_NAME = f"DeepCFR_{model_to_name(model_arg)}"
+        PLAYER_2_PATH = "./deep_CFR_vNB_integration"
+        print(f"Player 1: {PLAYER_1_NAME} ({PLAYER_1_PATH})")
+        print(f"Player 2: {PLAYER_2_NAME} ({PLAYER_2_PATH}) with model {model_arg}")
+    else:
+        # Override config with command-line arguments if provided
+        if args.player1:
+            PLAYER_1_PATH = f"./{args.player1}" if not args.player1.startswith('./') else args.player1
+            PLAYER_1_NAME = args.player1.replace('./', '').replace('_', ' ').title().replace(' ', '')
+            print(f"Player 1: {PLAYER_1_NAME} ({PLAYER_1_PATH})")
+        if args.player2:
+            PLAYER_2_PATH = f"./{args.player2}" if not args.player2.startswith('./') else args.player2
+            PLAYER_2_NAME = args.player2.replace('./', '').replace('_', ' ').title().replace(' ', '')
+            print(f"Player 2: {PLAYER_2_NAME} ({PLAYER_2_PATH})")
+    
+    # Print model info if specified
+    if model1_path:
+        print(f"Player 1 model: {model1_path}")
+    if model2_path:
+        print(f"Player 2 model: {model2_path}")
+
+    # Create game with potentially overridden player paths
+    game = Game()
+    # Override the log header with correct names
+    game.log = ['6.9630 MIT Pokerbots - ' + PLAYER_1_NAME + ' vs ' + PLAYER_2_NAME]
+    
+    # Override the run method's player creation
+    print('   __  _____________  ___       __           __        __    ')
+    print('  /  |/  /  _/_  __/ / _ \\___  / /_____ ____/ /  ___  / /____')
+    print(' / /|_/ // /  / /   / ___/ _ \\/  \'_/ -_) __/ _ \\/ _ \\/ __(_-<')
+    print('/_/  /_/___/ /_/   /_/   \\___/_/\\_\\\\__/_/ /_.__/\\___/\\__/___/')
+    print()
+    print('Starting the Pokerbots engine...')
+    
+    players = [
+        Player(PLAYER_1_NAME, PLAYER_1_PATH, model_path=model1_path),
+        Player(PLAYER_2_NAME, PLAYER_2_PATH, model_path=model2_path)
+    ]
+    
+    for player in players:
+        player.build()
+    for player in players:
+        player.run()
+    for round_num in range(1, NUM_ROUNDS + 1):
+        game.log.append('')
+        game.log.append('Round #' + str(round_num) + STATUS(players))
+        game.run_round(players)
+        players = players[::-1]
+
+    game.log.append('')
+    game.log.append('Final' + STATUS(players))
+
+    for player in players:
+        game.log.append('{} preflop bets EV: {}'.format(
+            player.name, game.ev_preflop_bets[player.name]))
+        game.log.append('{} flop bets EV: {}'.format(
+            player.name, game.ev_flop_bets[player.name]))
+        game.log.append('{} turn bets EV: {}'.format(
+            player.name, game.ev_turn_bets[player.name]))
+        player.stop()
+    
+    timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+    p1_safe = sanitize_for_filename(PLAYER_1_NAME)
+    p2_safe = sanitize_for_filename(PLAYER_2_NAME)
+    folder_name = f"{timestamp}_{p1_safe}_vs_{p2_safe}"
+    output_dir = Path(GAME_LOG_DIR) / folder_name
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    log_path = output_dir / f"{GAME_LOG_FILENAME}.txt"
+    print('Writing', log_path)
+    with open(log_path, 'w') as log_file:
+        log_file.write('\n'.join(game.log))
+    try:
+        plots = generate_plot_for_log(
+            log_path,
+            output_dir=output_dir,
+            formats=["png", "pdf"],
+        )
+        for plot in plots:
+            print('Wrote plot', plot)
+    except Exception as exc:
+        print('Plot generation failed:', exc)

@@ -36,10 +36,11 @@ class DeepCFRModule(nn.Module):
         self.hand_layer2 = nn.Linear(dim, dim)
         self.hand_layer3 = nn.Linear(dim, dim)
 
-        # Board card embeddings and layers
-        self.board_embeddings = nn.ModuleList(
-            [CardEmbedding(dim) for _ in range(nboardcards)])
-        self.board_layer1 = nn.Linear(dim*nboardcards, dim)
+        # Board card embedding - SINGLE shared embedding for permutation invariance
+        # All board cards use the same embedding and are SUMMED (order doesn't matter)
+        self.board_embedding = CardEmbedding(dim)
+        self.nboardcards = nboardcards  # Store for forward pass
+        self.board_layer1 = nn.Linear(dim, dim)  # Input is summed embedding (dim), not concat
         self.board_layer2 = nn.Linear(dim, dim)
         self.board_layer3 = nn.Linear(dim, dim)
 
@@ -137,7 +138,9 @@ class DeepCFRModule(nn.Module):
         if not isinstance(action_history, list):
             action_history = [action_history]
 
+        
         batch_size = len(canon_cards)
+        assert(batch_size==len(action_history))
         device = self.device  # Get device for tensor creation
 
         # Get canonical hand and board tensors for each sample
@@ -175,28 +178,31 @@ class DeepCFRModule(nn.Module):
         hand_feat = F.relu(self.hand_layer2(hand_feat))
         hand_feat = F.relu(self.hand_layer3(hand_feat))
 
-        # Process board cards (same as hand)
-        board_embeds_list = []
-        for i in range(len(self.board_embeddings)):
+        # Process board cards with PERMUTATION INVARIANCE
+        # All board cards use the same embedding and are SUMMED
+        # This means [card1, card2, card3] == [card3, card1, card2] (order doesn't matter)
+        board_embeds_sum = torch.zeros(batch_size, self.dim, device=device)
+        
+        for i in range(self.nboardcards):
             card_tensors = []
             for board_tensor in canon_boards:
                 if i < len(board_tensor):
                     card_tensors.append(board_tensor[i].item())
                 else:
-                    card_tensors.append(-1)
-
+                    card_tensors.append(-1)  # No card at this position
+            
             card_batch = torch.tensor(
                 card_tensors, dtype=torch.long, device=device).unsqueeze(1)
-            card_embed = self.board_embeddings[i](
-                card_batch)  # [batch_size, dim]
-            board_embeds_list.append(card_embed)
-
-        # Concatenate all board card embeddings
-        # [batch_size, dim * nboardcards]
-        board_embeds = torch.cat(board_embeds_list, dim=1)
+            
+            # Use the SAME embedding for all board card positions
+            card_embed = self.board_embedding(card_batch)  # [batch_size, dim]
+            
+            # SUM instead of concatenate (permutation invariance)
+            board_embeds_sum = board_embeds_sum + card_embed
 
         # Pass through board layers (NO skip connections - following paper)
-        board_feat = F.relu(self.board_layer1(board_embeds))
+        # Input is now [batch_size, dim] instead of [batch_size, dim*nboardcards]
+        board_feat = F.relu(self.board_layer1(board_embeds_sum))
         board_feat = F.relu(self.board_layer2(board_feat))
         board_feat = F.relu(self.board_layer3(board_feat))
 

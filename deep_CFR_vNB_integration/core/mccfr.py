@@ -634,8 +634,13 @@ class MCCFR:
         # Deal 3 cards to each player (MIT 2026 variant)
         hands = [deck.deal(3), deck.deal(3)]
 
+        # Randomize button position to balance sample collection between players
+        # button=0: Player 0 is small blind (acts first preflop)
+        # button=1: Player 1 is small blind (acts first preflop)
+        button = random.randint(0, 1)
+
         initial_state = RoundState(
-            button=0,
+            button=button,
             street=0,  # Preflop
             pips=[SMALL_BLIND, BIG_BLIND],
             stacks=[STARTING_STACK - SMALL_BLIND, STARTING_STACK - BIG_BLIND],

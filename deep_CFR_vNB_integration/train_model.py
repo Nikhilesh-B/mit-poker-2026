@@ -133,7 +133,10 @@ def train_model(
             monitor.log_iteration(i + 1, result, verbose=verbose)
         elif verbose:
             # Clear the line and show completion for non-training iterations
-            print(f"\rIter {i+1:4d}/{iterations} - Collected {result.get('traversals', 0)} samples\033[K")
+            new_p0 = result.get('new_samples_p0', 0)
+            new_p1 = result.get('new_samples_p1', 0)
+            traversals = result.get('traversals', 0)
+            print(f"\rIter {i+1:4d}/{iterations} - {traversals} traversals -> {new_p0}/{new_p1} samples (P0/P1)\033[K")
             
         # Check if this is the best model
         avg_loss = (result.get('loss_p0', 0) + result.get('loss_p1', 0)) / 2

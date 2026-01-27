@@ -64,7 +64,7 @@ class NetworkMCCFRIntegration:
         
         # Step 3: Get network prediction
         with torch.no_grad():
-            network_output = self.network(cc, ah)  # Shape: [1, 9]
+            network_output = self.network(cc, ah)  # Shape: [1, 19]
         
         # Step 4: Convert to MCCFR action keys
         regret_dict = map_network_output_to_actions(
@@ -253,7 +253,7 @@ def test_single_state_integration():
         nhandcards=3,
         nboardcards=6,  # 2 flop + 2 discards + turn + river = 6 max
         n_action_history=20,
-        nresponses=9,
+        nresponses=19,  # 3 discards + 3 basic + 13 pot-relative raises (25%-500% + all-in)
         dim=256
     )
     

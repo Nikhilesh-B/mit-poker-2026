@@ -56,7 +56,11 @@ class DeepCFRModule(nn.Module):
         self.comb_layer3 = nn.Linear(dim, dim)  # Skip connection here
 
         # Output head
-        # nactions => discard0, discard1, discard2, check, call, fold, raise_small, raise_medium, raise_large
+        # nactions => discard0, discard1, discard2, check, call, fold,
+        #             raise_25_pot, raise_50_pot, raise_75_pot, raise_100_pot, 
+        #             raise_150_pot, raise_200_pot, raise_250_pot, raise_300_pot,
+        #             raise_350_pot, raise_400_pot, raise_450_pot, raise_500_pot,
+        #             raise_all_in (19 total)
         self.action_head = nn.Linear(dim, nresponses)
         self.n_action_history = n_action_history
         
@@ -210,11 +214,11 @@ class DeepCFRModule(nn.Module):
         # For batch processing, we need to handle each sample's history
         action_features_list = []
         for hist in action_history:
-            action_feat = self._encode_action_history(hist, device)  # [n_action_history * 6]
+            action_feat = self._encode_action_history(hist, device)  # [n_action_history * 7]
             action_features_list.append(action_feat)
 
         # Stack into batch tensor
-        # [batch_size, n_action_history * 6]
+        # [batch_size, n_action_history * 7]
         action_features = torch.stack(action_features_list, dim=0)
 
         # Pass through action layers (paper: 2 layers with skip on layer 2)

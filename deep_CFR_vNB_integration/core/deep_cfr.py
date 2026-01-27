@@ -177,7 +177,7 @@ class DeepCFR:
             nhandcards=3,
             nboardcards=6,  # 2 flop + 2 discards + turn + river = 6 max
             n_action_history=20,
-            nresponses=9,
+            nresponses=19,  # 3 discards + 3 basic + 13 pot-relative raises (25%-500% + all-in)
             dim=dim
         )
 
@@ -464,7 +464,8 @@ class DeepCFR:
                 train_metrics = trainer.train_on_samples(
                     num_epochs=self.train_epochs,
                     verbose=True,
-                    network_name=f"V{player}"
+                    network_name=f"V{player}",
+                    current_iteration=self.iteration_count  # Pass T for LCFR 2/T rescaling
                 )
                 results[f'loss_p{player}'] = train_metrics['loss']
                 results[f'samples_p{player}'] = len(trainer.samples)
@@ -541,7 +542,8 @@ class DeepCFR:
                 num_epochs=self.train_epochs,
                 use_linear_weighting=True,
                 verbose=True,
-                network_name="Π"
+                network_name="Π",
+                current_iteration=self.iteration_count  # Pass T for LCFR 2/T rescaling
             )
             return {
                 'loss': train_metrics['loss'],

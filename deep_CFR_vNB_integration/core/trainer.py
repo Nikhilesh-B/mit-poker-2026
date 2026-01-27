@@ -187,46 +187,60 @@ class DeepCFRTrainer:
         samples_after = len(self.samples)
         return samples_after - samples_before
     
-    def _get_legal_action_mask(self, street: int, target_regrets: Dict[str, float] = None) -> List[float]:
+    def _get_legal_action_mask(self, street: int, target_regrets: Dict[str, float] = None,
+                               facing_bet: bool = None) -> List[float]:
         """
-        Get a mask indicating which actions are legal for a given situation.
+        Get a mask indicating which actions are legal based on the actual legal actions
+        in the sample's target_regrets dictionary.
         
-        Actions: [DISCARD_0, DISCARD_1, DISCARD_2, CHECK, CALL, FOLD, RAISE_S, RAISE_M, RAISE_L]
+        Actions: [DISCARD_0, DISCARD_1, DISCARD_2, CHECK, CALL, FOLD, 
+                  RAISE_25_POT, RAISE_50_POT, RAISE_75_POT, RAISE_100_POT,
+                  RAISE_150_POT, RAISE_200_POT, RAISE_250_POT, RAISE_300_POT,
+                  RAISE_350_POT, RAISE_400_POT, RAISE_450_POT, RAISE_500_POT,
+                  RAISE_ALL_IN]  (19 total)
         
-        Per the "Toss or Hold'em" rules, betting and discards are NEVER legal simultaneously:
-        - Preflop betting: betting ONLY
-        - Discard round (after flop dealt, before flop betting): discards ONLY  
-        - Flop/Turn/River betting: betting ONLY
-        
-        We determine which phase by checking the sample's target actions.
+        The mask is derived DIRECTLY from which action keys are present in target_regrets,
+        since target_regrets only contains regrets for legal actions.
         
         Args:
-            street: Street number (0-3) - used as fallback
-            target_regrets: Dict of action -> value from the sample (used to detect phase)
+            street: Street number (0-4) - used as fallback only
+            target_regrets: Dict of action -> value from the sample (keys are legal actions)
+            facing_bet: Unused, kept for API compatibility
         
         Returns:
-            List of 9 floats (1.0 for legal, 0.0 for illegal)
+            List of 19 floats (1.0 for legal, 0.0 for illegal)
         """
-        if target_regrets:
-            action_keys = set(target_regrets.keys())
-            discard_keys = {'DISCARD_0', 'DISCARD_1', 'DISCARD_2'}
-            
-            has_discards = bool(action_keys & discard_keys)
-            
-            if has_discards:
-                # Discard phase: ONLY discard actions legal
-                return [1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-            else:
-                # Betting phase: ONLY betting actions legal
-                return [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+        from utils.action_mapping import NETWORK_ACTION_TYPES
         
-        # Fallback based on street (shouldn't happen with proper samples)
+        # 19 actions total
+        NUM_ACTIONS = 19
+        
+        if target_regrets:
+            # Create mask directly from target_regrets keys
+            # An action is legal if it's in target_regrets (which only contains legal actions)
+            action_keys = set(target_regrets.keys())
+            
+            mask = []
+            for action_name in NETWORK_ACTION_TYPES:
+                if action_name in action_keys:
+                    mask.append(1.0)  # Legal action
+                else:
+                    mask.append(0.0)  # Illegal action
+            
+            return mask
+        
+        # Fallback: if no target_regrets, use heuristic based on street
+        # (This should rarely happen with proper samples)
         if street == 0:
-            # Preflop is typically betting
-            return [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+            # Preflop is betting - typically facing big blind
+            # [D0, D1, D2, CHECK, CALL, FOLD, 13 raises...]
+            return [0.0, 0.0, 0.0, 0.0, 1.0, 1.0] + [1.0] * 13
+        elif street in (1, 2):  # Discard streets
+            # Discard phase
+            return [1.0, 1.0, 1.0] + [0.0] * 16
         else:
-            # Flop/Turn/River: betting only
-            return [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+            # Other streets: default to not facing bet
+            return [0.0, 0.0, 0.0, 1.0, 0.0, 1.0] + [1.0] * 13
     
     def _extract_street(self, infoset: str) -> int:
         """
@@ -251,6 +265,10 @@ class DeepCFRTrainer:
         """
         Prepare a batch of samples for training.
         
+        With pot-relative action keys, we no longer need a dummy state for
+        converting regrets to tensors. The regrets_dict already contains
+        pot-relative keys that map directly to network output indices.
+        
         Args:
             batch_samples: List of TrainingSample objects
         
@@ -261,51 +279,43 @@ class DeepCFRTrainer:
         infosets = [sample.infoset for sample in batch_samples]
         cc_list, ah_list = batch_parse_infosets(infosets)
         
-        # Convert target regrets to tensors
-        # We need to get state for each sample (approximation: use a dummy state)
-        # This is a simplification - in practice, we'd need to store state info
-        state = self.mccfr.create_initial_state()
-        
         target_tensors = []
         iterations = []
         legal_masks = []
         
         for sample in batch_samples:
-            target_tensor = regrets_dict_to_tensor(
-                sample.target_regrets,
-                state,  # Using dummy state - imperfect but works
-                sample.player,
-                self.mccfr
-            )
+            # Convert pot-relative regrets dict to tensor (no state needed!)
+            target_tensor = regrets_dict_to_tensor(sample.target_regrets)
             target_tensors.append(target_tensor)
             iterations.append(sample.iteration)
             
-            # Create legal action mask based on street AND the actual actions in the sample
+            # Create legal action mask based on the actual actions in the sample
+            # This correctly infers facing_bet from whether CHECK or CALL is present
             street = self._extract_street(sample.infoset)
             legal_masks.append(self._get_legal_action_mask(street, sample.target_regrets))
         
         # Stack into batch
-        target_batch = torch.stack(target_tensors)  # [batch_size, 9]
+        target_batch = torch.stack(target_tensors)  # [batch_size, 19]
         
         # Create iteration weights for linear weighting
         # Paper: weight each sample by iteration t' (later iterations weighted more)
         iteration_weights = torch.tensor(iterations, dtype=torch.float32)  # [batch_size]
         
         # Create legal action mask tensor
-        legal_mask = torch.tensor(legal_masks, dtype=torch.float32)  # [batch_size, 9]
+        legal_mask = torch.tensor(legal_masks, dtype=torch.float32)  # [batch_size, 19]
         
         return cc_list, ah_list, target_batch, iteration_weights, legal_mask
     
     def train_on_samples(self, num_epochs: int = 1, use_fixed_iterations: bool = True,
                          use_linear_weighting: bool = True, verbose: bool = True,
-                         network_name: str = "Network") -> Dict[str, float]:
+                         network_name: str = "Network", current_iteration: int = None) -> Dict[str, float]:
         """
         Train network on collected samples.
         
         Following the paper:
         - Uses fixed number of SGD iterations (not epochs)
         - Applies gradient norm clipping
-        - Uses linear weighting by iteration t'
+        - Uses linear weighting by iteration t' with 2/T rescaling (LCFR)
         - Uses GPU (MPS/CUDA) for batch training if available
         
         Args:
@@ -314,6 +324,7 @@ class DeepCFRTrainer:
             use_linear_weighting: If True, weight loss by iteration (paper's approach)
             verbose: If True, show tqdm progress bar
             network_name: Name to display in progress bar (e.g., "V0", "V1", "Π")
+            current_iteration: Current CFR iteration T (required for 2/T rescaling in LCFR)
         
         Returns:
             Dictionary with training metrics
@@ -376,7 +387,10 @@ class DeepCFRTrainer:
                         predictions = predictions.to(target_batch.device)
                     
                     # Compute loss with linear weighting and legal action masking
-                    # Paper: L(θ) = E[(t' · Σ_a (r̃_t'(a) - V(I,a|θ))²)]
+                    # Paper Section 5.3 (LCFR): 
+                    # - Each sample is weighted by t' (iteration when collected)
+                    # - At training time T, rescale all weights by 2/T
+                    # - Effective weight = t' * (2/T)
                     # We only compute loss for LEGAL actions (e.g., no discards on flop/turn/river)
                     if use_linear_weighting:
                         # Per-sample squared error, masked by legal actions
@@ -384,8 +398,14 @@ class DeepCFRTrainer:
                         masked_errors = squared_errors * legal_mask  # Zero out illegal action errors
                         per_sample_loss = masked_errors.sum(dim=1)  # [batch]
                         
-                        # Weight by iteration and average
-                        weighted_loss = (iter_weights * per_sample_loss).mean()
+                        # Apply LCFR 2/T rescaling (paper Section 5.3)
+                        # Weight by t' * (2/T) where T is current training iteration
+                        if current_iteration is not None and current_iteration > 0:
+                            scaled_weights = iter_weights * (2.0 / current_iteration)
+                        else:
+                            scaled_weights = iter_weights
+                        
+                        weighted_loss = (scaled_weights * per_sample_loss).mean()
                         loss = weighted_loss
                     else:
                         # Apply mask to MSE loss
@@ -448,12 +468,17 @@ class DeepCFRTrainer:
                         if predictions.device != target_batch.device:
                             predictions = predictions.to(target_batch.device)
                         
-                        # Weighted loss with legal action masking
+                        # Weighted loss with legal action masking (LCFR 2/T rescaling)
                         if use_linear_weighting:
                             squared_errors = (predictions - target_batch) ** 2
                             masked_errors = squared_errors * legal_mask
                             per_sample_loss = masked_errors.sum(dim=1)
-                            loss = (iter_weights * per_sample_loss).mean()
+                            # Apply LCFR 2/T rescaling
+                            if current_iteration is not None and current_iteration > 0:
+                                scaled_weights = iter_weights * (2.0 / current_iteration)
+                            else:
+                                scaled_weights = iter_weights
+                            loss = (scaled_weights * per_sample_loss).mean()
                         else:
                             squared_errors = (predictions - target_batch) ** 2
                             masked_errors = squared_errors * legal_mask
@@ -555,7 +580,7 @@ def test_basic_training():
         nhandcards=3,
         nboardcards=6,  # 2 flop + 2 discards + turn + river = 6 max
         n_action_history=20,
-        nresponses=9,
+        nresponses=19,  # 3 discards + 3 basic + 13 pot-relative raises (25%-500% + all-in)
         dim=256
     )
     mccfr = MCCFR()

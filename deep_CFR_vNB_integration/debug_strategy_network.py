@@ -50,7 +50,7 @@ def inspect_model_outputs(model_path: str, num_states: int = 10):
         nhandcards=3,
         nboardcards=6,
         n_action_history=20,
-        nresponses=9,
+        nresponses=19,  # 3 discards + 3 basic + 13 pot-relative raises
         dim=network_dim
     )
     

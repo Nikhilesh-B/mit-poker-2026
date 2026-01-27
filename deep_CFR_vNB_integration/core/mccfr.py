@@ -294,11 +294,14 @@ class MCCFR:
 
         This method works with action instances from both custom_engine and 
         skeleton.actions modules by checking type names instead of identity.
+        
+        For raises, uses POT-RELATIVE keys (RAISE_25_POT, RAISE_50_POT, etc.)
+        to enable generalization across different game states.
 
         Args:
             action: Action instance (FoldAction, CallAction, etc.)
-            state: Current RoundState (required for DiscardAction)
-            active_player: Player index (required for DiscardAction)
+            state: Current RoundState (required for RaiseAction pot calculation)
+            active_player: Player index (optional)
 
         Returns:
             String key representing the action
@@ -311,20 +314,55 @@ class MCCFR:
         elif is_check_action(action):
             return "CHECK"
         elif is_raise_action(action):
-            # Bucket raise by position in raise bounds (min/mid/max → SMALL/MEDIUM/LARGE)
+            # Use POT-RELATIVE keys for raises
             if state is not None and hasattr(state, 'raise_bounds'):
                 min_raise, max_raise = state.raise_bounds()
                 amount = action.amount
                 
-                # Map based on position: min→SMALL, max→LARGE, else→MEDIUM
-                if amount <= min_raise:
-                    return "RAISE_SMALL"
-                elif amount >= max_raise:
-                    return "RAISE_LARGE"
+                # Check for all-in first
+                if amount >= max_raise:
+                    return "RAISE_ALL_IN"
+                
+                # Calculate pot size
+                pot_from_previous_streets = (2 * STARTING_STACK) - sum(state.stacks)
+                pot_this_street = sum(state.pips)
+                pot = pot_from_previous_streets + pot_this_street
+                
+                # Calculate pot fraction
+                if pot > 0:
+                    pot_fraction = amount / pot
                 else:
-                    return "RAISE_MEDIUM"
+                    pot_fraction = 1.0  # Default to pot-sized
+                
+                # Map to closest pot-relative bucket
+                # Buckets: 25%, 50%, 75%, 100%, 150%, 200%, 250%, 300%, 350%, 400%, 450%, 500%
+                if pot_fraction <= 0.375:      # <= 37.5% -> 25%
+                    return 'RAISE_25_POT'
+                elif pot_fraction <= 0.625:    # <= 62.5% -> 50%
+                    return 'RAISE_50_POT'
+                elif pot_fraction <= 0.875:    # <= 87.5% -> 75%
+                    return 'RAISE_75_POT'
+                elif pot_fraction <= 1.25:     # <= 125% -> 100%
+                    return 'RAISE_100_POT'
+                elif pot_fraction <= 1.75:     # <= 175% -> 150%
+                    return 'RAISE_150_POT'
+                elif pot_fraction <= 2.25:     # <= 225% -> 200%
+                    return 'RAISE_200_POT'
+                elif pot_fraction <= 2.75:     # <= 275% -> 250%
+                    return 'RAISE_250_POT'
+                elif pot_fraction <= 3.25:     # <= 325% -> 300%
+                    return 'RAISE_300_POT'
+                elif pot_fraction <= 3.75:     # <= 375% -> 350%
+                    return 'RAISE_350_POT'
+                elif pot_fraction <= 4.25:     # <= 425% -> 400%
+                    return 'RAISE_400_POT'
+                elif pot_fraction <= 4.75:     # <= 475% -> 450%
+                    return 'RAISE_450_POT'
+                else:                          # > 475% -> 500%
+                    return 'RAISE_500_POT'
             else:
-                return f"RAISE_{action.amount}"
+                # Fallback without state - use all-in as default
+                return "RAISE_ALL_IN"
         elif is_discard_action(action):
             # Use position-based keys (0, 1, 2) for network compatibility
             # The network outputs DISCARD_0, DISCARD_1, DISCARD_2 for positions in hand
@@ -350,7 +388,7 @@ class MCCFR:
         Get list of legal actions with concrete values.
 
         Action abstraction:
-        - Raises: 3 discrete sizes (MIN, MID, MAX)
+        - Raises: 7 pot-relative sizes (25%, 50%, 75%, 100%, 150%, 200%, all-in)
         - Discards: All cards in hand
         - Check/Call/Fold: Single action each
 
@@ -393,19 +431,32 @@ class MCCFR:
             action_name = action_type.__name__
             
             if action_name == 'RaiseAction':
-                # Discretize raise space into 3 sizes: min, mid, max
-                # These map directly to RAISE_SMALL, RAISE_MEDIUM, RAISE_LARGE
+                # Discretize raise space into 13 pot-relative sizes
+                # Pot-relative fractions: 25%, 50%, 75%, 100%, 150%, 200%-500% in 50% steps, plus all-in
                 min_raise, max_raise = state.raise_bounds()
-                raise_sizes = [
-                    min_raise,
-                    (min_raise + max_raise) // 2,
-                    max_raise
-                ]
-                # Remove duplicate amounts (e.g., if min == max)
-                raise_sizes = sorted(list(set(raise_sizes)))
-
-                for size in raise_sizes:
+                
+                # Calculate pot size
+                pot_from_previous_streets = (2 * STARTING_STACK) - sum(state.stacks)
+                pot_this_street = sum(state.pips)
+                pot = pot_from_previous_streets + pot_this_street
+                
+                # Pot-relative raise fractions (12 fractions + all-in)
+                pot_fractions = [0.25, 0.50, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0]
+                
+                raise_sizes = set()
+                for fraction in pot_fractions:
+                    target = int(pot * fraction)
+                    # Clamp to legal bounds
+                    clamped = max(min_raise, min(target, max_raise))
+                    raise_sizes.add(clamped)
+                
+                # Always add all-in (max_raise)
+                raise_sizes.add(max_raise)
+                
+                # Sort and create actions
+                for size in sorted(raise_sizes):
                     actions.append(raise_cls(size))
+                    
             elif action_name == 'DiscardAction':
                 # All cards in hand can be discarded
                 for card_idx in range(len(state.hands[active])):

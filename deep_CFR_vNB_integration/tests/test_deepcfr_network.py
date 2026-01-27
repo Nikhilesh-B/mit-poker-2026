@@ -58,7 +58,7 @@ def test_network_creates_successfully():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=9,
+        nresponses=19,
         dim=256
     )
     assert isinstance(network, torch.nn.Module)
@@ -71,7 +71,7 @@ def test_network_parameter_count():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=9,
+        nresponses=19,
         dim=256
     )
     params = sum(p.numel() for p in network.parameters() if p.requires_grad)
@@ -85,7 +85,7 @@ def test_network_embedding_layers():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=9,
+        nresponses=19,
         dim=256
     )
     assert len(network.hand_embeddings) == 3, "Should have 3 hand card embeddings"
@@ -110,7 +110,7 @@ def test_forward_pass_preflop():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=9,
+        nresponses=19,
         dim=256
     )
     network.eval()
@@ -135,7 +135,7 @@ def test_forward_pass_with_board():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=9,
+        nresponses=19,
         dim=256
     )
     network.eval()
@@ -158,7 +158,7 @@ def test_forward_pass_with_action_history():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=9,
+        nresponses=19,
         dim=256
     )
     network.eval()
@@ -193,7 +193,7 @@ def test_batch_forward_pass():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=9,
+        nresponses=19,
         dim=256
     )
     network.eval()
@@ -222,7 +222,7 @@ def test_batch_size_10():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=9,
+        nresponses=19,
         dim=256
     )
     network.eval()
@@ -262,7 +262,7 @@ def test_with_real_mccfr_infosets():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=9,
+        nresponses=19,
         dim=256
     )
     network.eval()
@@ -293,7 +293,7 @@ def test_with_mccfr_game_progression():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=9,
+        nresponses=19,
         dim=256
     )
     network.eval()
@@ -332,7 +332,7 @@ def test_action_history_empty():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=9,
+        nresponses=19,
         dim=256
     )
 
@@ -351,7 +351,7 @@ def test_action_history_single_action():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=9,
+        nresponses=19,
         dim=256
     )
 
@@ -384,7 +384,7 @@ def test_action_history_long_sequence():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=9,
+        nresponses=19,
         dim=256
     )
 
@@ -420,7 +420,7 @@ def test_empty_board_preflop():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=9,
+        nresponses=19,
         dim=256
     )
     network.eval()
@@ -443,7 +443,7 @@ def test_all_same_suit():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=9,
+        nresponses=19,
         dim=256
     )
     network.eval()
@@ -468,7 +468,7 @@ def test_output_values_are_finite():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=9,
+        nresponses=19,
         dim=256
     )
     network.eval()
@@ -501,7 +501,7 @@ def test_deterministic_output():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=9,
+        nresponses=19,
         dim=256
     )
     network.eval()
@@ -524,7 +524,7 @@ def test_different_inputs_different_outputs():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=9,
+        nresponses=19,
         dim=256
     )
     network.eval()
@@ -550,7 +550,7 @@ def test_gradient_flow():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=9,
+        nresponses=19,
         dim=256
     )
     network.train()

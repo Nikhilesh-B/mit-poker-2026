@@ -293,7 +293,7 @@ def main():
         sys.exit(1)
     
     network_dim = model_data.get('network_dim', 256)
-    network = DeepCFRModule(nhandcards=3, nboardcards=6, n_action_history=20, nresponses=9, dim=network_dim)
+    network = DeepCFRModule(nhandcards=3, nboardcards=6, n_action_history=20, nresponses=19, dim=network_dim)
     network.load_state_dict(model_data['strategy_network_state_dict'])
     network.eval()
     
@@ -326,7 +326,7 @@ def main():
         for player in [0, 1]:
             key = f'network_p{player}_state_dict'
             if key in model_data:
-                v_network = DeepCFRModule(nhandcards=3, nboardcards=5, n_action_history=20, nresponses=9, dim=network_dim)
+                v_network = DeepCFRModule(nhandcards=3, nboardcards=6, n_action_history=20, nresponses=19, dim=network_dim)
                 v_network.load_state_dict(model_data[key])
                 v_network.eval()
                 

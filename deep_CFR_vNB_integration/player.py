@@ -68,7 +68,7 @@ class Player(Bot):
                 nhandcards=3,
                 nboardcards=6,  # 2 flop + 2 discards + turn + river = 6 max
                 n_action_history=20,
-                nresponses=9,
+                nresponses=19,  # 3 discards + 3 basic + 13 pot-relative raises (25%-500% + all-in)
                 dim=network_dim
             )
 

@@ -311,24 +311,16 @@ class MCCFR:
         elif is_check_action(action):
             return "CHECK"
         elif is_raise_action(action):
-            # Bucket raise by size relative to pot
-            if state is not None:
-                pot_from_previous_streets = (
-                    2 * STARTING_STACK) - sum(state.stacks)
-                pot_this_street = sum(state.pips)
-                pot_before_bet = pot_from_previous_streets + pot_this_street
-
-                current_pip = state.pips[active_player] if active_player is not None else 0
-                bet_amount = action.amount - current_pip
-
-                if pot_before_bet > 0:
-                    bet_to_pot_ratio = bet_amount / pot_before_bet
-                    if bet_to_pot_ratio < 0.5:
-                        return "RAISE_SMALL"
-                    elif bet_to_pot_ratio < 1.0:
-                        return "RAISE_MEDIUM"
-                    else:
-                        return "RAISE_LARGE"
+            # Bucket raise by position in raise bounds (min/mid/max → SMALL/MEDIUM/LARGE)
+            if state is not None and hasattr(state, 'raise_bounds'):
+                min_raise, max_raise = state.raise_bounds()
+                amount = action.amount
+                
+                # Map based on position: min→SMALL, max→LARGE, else→MEDIUM
+                if amount <= min_raise:
+                    return "RAISE_SMALL"
+                elif amount >= max_raise:
+                    return "RAISE_LARGE"
                 else:
                     return "RAISE_MEDIUM"
             else:
@@ -401,14 +393,16 @@ class MCCFR:
             action_name = action_type.__name__
             
             if action_name == 'RaiseAction':
-                # Discretize raise space into 3 sizes
+                # Discretize raise space into 3 sizes: min, mid, max
+                # These map directly to RAISE_SMALL, RAISE_MEDIUM, RAISE_LARGE
                 min_raise, max_raise = state.raise_bounds()
                 raise_sizes = [
                     min_raise,
                     (min_raise + max_raise) // 2,
                     max_raise
                 ]
-                raise_sizes = sorted(list(set(raise_sizes)))  # Remove duplicates
+                # Remove duplicate amounts (e.g., if min == max)
+                raise_sizes = sorted(list(set(raise_sizes)))
 
                 for size in raise_sizes:
                     actions.append(raise_cls(size))
@@ -470,22 +464,23 @@ class MCCFR:
             strategy = {
                 key: positive_regrets[key] / sum_positive for key in action_keys}
         else:
-            # All regrets negative: use softmax on regrets with temperature
-            # This gives probabilistic strategies (better for NN training) while
-            # still favoring higher-regret actions. Temperature=1.0 means regrets
-            # are used directly as logits.
+            # All regrets negative: pick action with HIGHEST regret (deterministically)
             # 
-            # Note: Paper Figure 4 suggests deterministic (pick best) reduces
-            # exploitability by ~50%, but that creates poor training targets.
-            # We use softmax for more diverse samples.
-            import math
+            # Paper Figure 4: "if the algorithm plays a uniform strategy when all 
+            # regrets are negative (i.e. standard regret matching), rather than the 
+            # highest-regret action, the final exploitability is also 50% higher."
+            #
+            # This deterministic choice reduces exploitability by ~50% vs uniform/softmax.
             if action_keys:
-                # Softmax: exp(r) / sum(exp(r)) - shift by max for numerical stability
                 regret_values = [regrets.get(k, 0.0) for k in action_keys]
                 max_regret = max(regret_values)
-                exp_values = [math.exp(r - max_regret) for r in regret_values]
-                sum_exp = sum(exp_values)
-                strategy = {key: exp_values[i] / sum_exp for i, key in enumerate(action_keys)}
+                # Find the KEY with the highest (least negative) regret
+                max_idx = regret_values.index(max_regret)
+                best_key = action_keys[max_idx]
+                # Assign probability 1 to that key, 0 to others
+                # Note: Using key comparison (not index) handles duplicate keys correctly
+                strategy = {key: 1.0 if key == best_key else 0.0 
+                           for key in action_keys}
             else:
                 strategy = {}
 

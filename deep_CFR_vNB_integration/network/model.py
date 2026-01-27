@@ -45,7 +45,8 @@ class DeepCFRModule(nn.Module):
 
         # Action history layers (analogous to "bet branch" in paper)
         # Paper: bet1 and bet2 with skip on bet2
-        self.actions_layer1 = nn.Linear(n_action_history*6, dim)
+        # 7 features per action: check, call, fold, discard, raise_small, raise_medium, raise_large
+        self.actions_layer1 = nn.Linear(n_action_history*7, dim)
         self.actions_layer2 = nn.Linear(dim, dim)  # Skip connection here
 
         # Combined trunk layers (paper: comb1, comb2, comb3 with skips on comb2, comb3)
@@ -64,16 +65,22 @@ class DeepCFRModule(nn.Module):
     
     def _init_output_to_zero(self):
         """
-        Initialize the output layer so the network returns 0 for all inputs.
+        Initialize the output layer so outputs are near-zero at start.
         
         From the paper: "Initialize each player's advantage network V(I,a|θp) 
         with parameters θp so that it returns 0 for all inputs."
         
-        This is important because at iteration 0, all advantages should be 0,
-        leading to uniform strategy via regret matching.
+        IMPORTANT: The paper also says "trained from scratch each CFR iteration, 
+        starting from a random initialization" (Section 5.2). Setting weights to
+        exactly zero BLOCKS GRADIENT FLOW to earlier layers!
+        
+        Solution: Use very small random weights (Xavier with small gain) so:
+        1. Initial outputs are near-zero (giving ~uniform strategy via regret matching)
+        2. Gradients can still flow back through the network
         """
-        # Set output layer weights and bias to zero
-        nn.init.zeros_(self.action_head.weight)
+        # Small random weights - allows gradients to flow while keeping outputs near zero
+        nn.init.xavier_uniform_(self.action_head.weight, gain=0.01)
+        # Zero bias - centers outputs around zero
         nn.init.zeros_(self.action_head.bias)
 
     def _encode_action_history(self, action_history_str: str, device: torch.device = None) -> torch.Tensor:
@@ -84,11 +91,10 @@ class DeepCFRModule(nn.Module):
             action_history_str: String representation of action history
             device: Device to create tensor on (defaults to CPU)
 
-        Each action is one-hot encoded as 6 features:
-        [is_check, is_call, is_fold, is_discard, is_raise_small, is_raise_medium]
-        (raise_large is mapped to raise_medium to fit 6 features)
+        Each action is one-hot encoded as 7 features:
+        [is_check, is_call, is_fold, is_discard, is_raise_small, is_raise_medium, is_raise_large]
         """
-        # Map action characters to indices
+        # Map action characters to indices (7 features total)
         action_map = {
             'X': 0,  # check
             'C': 1,  # call
@@ -96,7 +102,7 @@ class DeepCFRModule(nn.Module):
             'D': 3,  # discard
             'r': 4,  # raise small
             'R': 5,  # raise medium
-            'B': 5,  # raise large (map to same as medium)
+            'B': 6,  # raise large (now has its own index!)
         }
 
         # Convert string to list of characters
@@ -107,10 +113,10 @@ class DeepCFRModule(nn.Module):
         while len(all_actions) < self.n_action_history:
             all_actions.append('')  # Empty action (all zeros)
 
-        # One-hot encode each action as 6 features
+        # One-hot encode each action as 7 features
         features = []
         for action_char in all_actions:
-            one_hot = [0.0] * 6
+            one_hot = [0.0] * 7
             if action_char in action_map:
                 idx = action_map[action_char]
                 one_hot[idx] = 1.0

@@ -52,32 +52,43 @@ from typing import Dict, List, Tuple, Union, Optional
 # Helper functions to identify action types regardless of their source module
 def is_fold_action(action_or_type):
     """Check if action or type is a FoldAction."""
-    name = action_or_type.__class__.__name__ if not isinstance(action_or_type, type) else action_or_type.__name__
+    name = action_or_type.__class__.__name__ if not isinstance(
+        action_or_type, type) else action_or_type.__name__
     return name == 'FoldAction'
+
 
 def is_call_action(action_or_type):
     """Check if action or type is a CallAction."""
-    name = action_or_type.__class__.__name__ if not isinstance(action_or_type, type) else action_or_type.__name__
+    name = action_or_type.__class__.__name__ if not isinstance(
+        action_or_type, type) else action_or_type.__name__
     return name == 'CallAction'
+
 
 def is_check_action(action_or_type):
     """Check if action or type is a CheckAction."""
-    name = action_or_type.__class__.__name__ if not isinstance(action_or_type, type) else action_or_type.__name__
+    name = action_or_type.__class__.__name__ if not isinstance(
+        action_or_type, type) else action_or_type.__name__
     return name == 'CheckAction'
+
 
 def is_raise_action(action_or_type):
     """Check if action or type is a RaiseAction."""
-    name = action_or_type.__class__.__name__ if not isinstance(action_or_type, type) else action_or_type.__name__
+    name = action_or_type.__class__.__name__ if not isinstance(
+        action_or_type, type) else action_or_type.__name__
     return name == 'RaiseAction'
+
 
 def is_discard_action(action_or_type):
     """Check if action or type is a DiscardAction."""
-    name = action_or_type.__class__.__name__ if not isinstance(action_or_type, type) else action_or_type.__name__
+    name = action_or_type.__class__.__name__ if not isinstance(
+        action_or_type, type) else action_or_type.__name__
     return name == 'DiscardAction'
+
 
 def is_terminal_state(state):
     """Check if state is a TerminalState."""
     return state.__class__.__name__ == 'TerminalState'
+
 
 def is_round_state(state):
     """Check if state is a RoundState."""
@@ -101,7 +112,7 @@ class MCCFR:
     This class implements the Deep CFR paper's external sampling approach:
     - Stores INSTANTANEOUS regrets (not cumulative) with iteration numbers
     - Collects strategy samples at opponent nodes for the strategy network
-    
+
     Following the paper:
     - At traverser's nodes: store (infoset, iteration, instantaneous_regrets) in MV,p
     - At opponent's nodes: store (infoset, iteration, current_strategy) in MΠ
@@ -118,17 +129,17 @@ class MCCFR:
 
         # Cache for infoset lookups (avoids recomputation)
         self.infoset_cache = {}
-        
+
         # === Deep CFR Paper's Data Collection ===
         # Advantage memories MV,p: List of (infoset, iteration, instantaneous_regrets, player)
         self.advantage_memory = {
             0: [],  # Player 0's advantage samples
             1: []   # Player 1's advantage samples
         }
-        
+
         # Strategy memory MΠ: List of (infoset, iteration, strategy, player)
         self.strategy_memory = []
-        
+
         # Current CFR iteration (for linear weighting)
         self.current_iteration = 0
 
@@ -178,7 +189,7 @@ class MCCFR:
                 elif is_discard_action(action):
                     history.append('D')
                 elif is_raise_action(action):
-                    # Bucket bet sizes into 3 categories
+                    # Bucket bet sizes into 13 categories (matching output action space)
                     pot_from_previous_streets = (
                         2 * STARTING_STACK) - sum(prev.stacks)
                     pot_this_street = sum(prev.pips)
@@ -186,16 +197,19 @@ class MCCFR:
 
                     bet_amount = max(current.pips) - max(prev.pips)
 
+                    # Check for all-in first
+                    if hasattr(prev, 'raise_bounds'):
+                        _, max_raise = prev.raise_bounds()
+                        if bet_amount >= max_raise:
+                            history.append('Z')  # All-in
+                            continue
+
                     if pot_before_bet > 0:
                         bet_to_pot_ratio = bet_amount / pot_before_bet
-                        if bet_to_pot_ratio < 0.5:
-                            history.append('r')  # Small bet
-                        elif bet_to_pot_ratio < 1.0:
-                            history.append('R')  # Medium bet
-                        else:
-                            history.append('B')  # Large bet
+                        history.append(
+                            self._pot_ratio_to_char(bet_to_pot_ratio))
                     else:
-                        history.append('R')  # Default to medium
+                        history.append('4')  # Default to 100% pot
 
             # Method 2: Reconstruct action from state differences (live play with skeleton/states)
             else:
@@ -205,6 +219,7 @@ class MCCFR:
 
             current = prev
 
+
         # Reverse to get chronological order
         history.reverse()
         history_str = ''.join(history[-20:])  # Keep last 20 actions
@@ -213,18 +228,55 @@ class MCCFR:
         infoset = f"S{street}|H:{hand_str}|B:{board_str}|A:{history_str}"
         return infoset
 
+    def _pot_ratio_to_char(self, pot_ratio: float) -> str:
+        """
+        Convert pot ratio to single character for action history encoding.
+
+        Uses 13 buckets matching the output action space:
+        '1' = 25%, '2' = 50%, ..., '9' = 350%, 'T' = 400%, 'E' = 450%, 'W' = 500%, 'Z' = all-in
+
+        Bucket boundaries are at midpoints (same as action_to_key):
+        - <= 0.375 -> '1' (25%)
+        - <= 0.625 -> '2' (50%)
+        - etc.
+        """
+        if pot_ratio <= 0.375:
+            return '1'  # 25%
+        elif pot_ratio <= 0.625:
+            return '2'  # 50%
+        elif pot_ratio <= 0.875:
+            return '3'  # 75%
+        elif pot_ratio <= 1.25:
+            return '4'  # 100%
+        elif pot_ratio <= 1.75:
+            return '5'  # 150%
+        elif pot_ratio <= 2.25:
+            return '6'  # 200%
+        elif pot_ratio <= 2.75:
+            return '7'  # 250%
+        elif pot_ratio <= 3.25:
+            return '8'  # 300%
+        elif pot_ratio <= 3.75:
+            return '9'  # 350%
+        elif pot_ratio <= 4.25:
+            return 'T'  # 400%
+        elif pot_ratio <= 4.75:
+            return 'E'  # 450%
+        else:
+            return 'W'  # 500%+ (but not all-in, which is handled separately)
+
     def _infer_action_from_state_diff(self, current, prev) -> Optional[str]:
         """
         Infer what action was taken by comparing current and previous states.
-        
+
         This is used during live play when the RoundState doesn't have action_taken.
-        
+
         Args:
             current: Current state
             prev: Previous state
-            
+
         Returns:
-            Single character action key ('F', 'C', 'X', 'D', 'r', 'R', 'B') or None
+            Single character action key ('F', 'C', 'X', 'D', '1'-'9', 'T', 'E', 'W', 'Z') or None
         """
         # Check for discard actions (board grows within same street during discard phase)
         if hasattr(current, 'board') and hasattr(prev, 'board'):
@@ -232,7 +284,7 @@ class MCCFR:
                 # Board grew - this is a discard action (streets 2 and 3 are discard streets)
                 if prev.street in (2, 3) and current.street == prev.street:
                     return 'D'
-        
+
         # Check for street transitions (Call or Check to end betting round)
         if current.street != prev.street:
             # Street changed - someone either called or checked to end the round
@@ -242,61 +294,69 @@ class MCCFR:
                 return 'X'  # Check to end street
             else:
                 return 'C'  # Call to end street
-        
+
         # Check for bets/raises/calls within same street
         if hasattr(current, 'pips') and hasattr(prev, 'pips'):
             if current.pips != prev.pips:
                 # Pips changed within the same street
                 # Determine if it's a call or a bet/raise
-                
+
                 # A call makes pips equal without increasing the max pip
                 # (the calling player just matches the existing bet)
                 if current.pips[0] == current.pips[1] and max(current.pips) == max(prev.pips):
                     return 'C'  # Call (pips equalized, max unchanged)
-                
+
                 # A bet/raise increases the max pip
                 bet_amount = max(current.pips) - max(prev.pips)
-                
+
                 if bet_amount > 0:
-                    # This is a bet or raise
-                    pot_from_previous_streets = (2 * STARTING_STACK) - sum(prev.stacks)
+                    # This is a bet or raise - check for all-in first
+                    if hasattr(prev, 'raise_bounds'):
+                        _, max_raise = prev.raise_bounds()
+                        if bet_amount >= max_raise:
+                            return 'Z'  # All-in
+
+                    pot_from_previous_streets = (
+                        2 * STARTING_STACK) - sum(prev.stacks)
                     pot_this_street = sum(prev.pips)
                     pot_before_bet = pot_from_previous_streets + pot_this_street
 
                     if pot_before_bet > 0:
                         bet_to_pot_ratio = bet_amount / pot_before_bet
-                        if bet_to_pot_ratio < 0.5:
-                            return 'r'  # Small bet
-                        elif bet_to_pot_ratio < 1.0:
-                            return 'R'  # Medium bet
-                        else:
-                            return 'B'  # Large bet
+                        return self._pot_ratio_to_char(bet_to_pot_ratio)
                     else:
-                        return 'R'  # Default to medium
+                        return '4'  # Default to 100% pot
                 else:
                     # Bet amount is 0 or negative - likely a call
                     return 'C'
-        
+
         # Check for checks (button advanced but pips didn't change)
         if hasattr(current, 'button') and hasattr(prev, 'button'):
             if current.button != prev.button and current.pips == prev.pips:
                 return 'X'  # Check (button moved, pips same)
-        
+
         # Check for fold - this would be in terminal state, but handle just in case
         # Folds are usually detected by going to terminal state, so this is rare
-        
+
         return None  # Couldn't determine action
 
-    def action_to_key(self, action, state = None,
+    def action_to_key(self, action, state=None,
                       active_player: Optional[int] = None) -> str:
         """
         Convert an action object to a string key.
 
         This method works with action instances from both custom_engine and 
         skeleton.actions modules by checking type names instead of identity.
-        
-        For raises, uses POT-RELATIVE keys (RAISE_25_POT, RAISE_50_POT, etc.)
-        to enable generalization across different game states.
+
+        For raises, uses GEOMETRIC POT-RELATIVE bucket keys:
+        - RAISE_TINY: < 25% pot
+        - RAISE_SMALL: 25-50% pot
+        - RAISE_MEDIUM: 50-100% pot
+        - RAISE_POT: 100-200% pot
+        - RAISE_LARGE: 200-800% pot
+        - RAISE_HUGE: 800-2000% pot
+        - RAISE_MASSIVE: 2000-4000% pot
+        - RAISE_ALL_IN: >= 4000% pot or actual all-in
 
         Args:
             action: Action instance (FoldAction, CallAction, etc.)
@@ -314,52 +374,27 @@ class MCCFR:
         elif is_check_action(action):
             return "CHECK"
         elif is_raise_action(action):
-            # Use POT-RELATIVE keys for raises
+            # Use ABSOLUTE AMOUNT bucket keys for raises
+            # Buckets: <15, 15-50, 50-125, 125-250, 250+
             if state is not None and hasattr(state, 'raise_bounds'):
                 min_raise, max_raise = state.raise_bounds()
                 amount = action.amount
-                
+
                 # Check for all-in first
-                if amount >= max_raise:
+                if amount >= max_raise or amount >= 250:
                     return "RAISE_ALL_IN"
-                
-                # Calculate pot size
-                pot_from_previous_streets = (2 * STARTING_STACK) - sum(state.stacks)
-                pot_this_street = sum(state.pips)
-                pot = pot_from_previous_streets + pot_this_street
-                
-                # Calculate pot fraction
-                if pot > 0:
-                    pot_fraction = amount / pot
+
+                # Map to absolute amount bucket
+                if amount < 15:
+                    return 'RAISE_TINY'
+                elif amount < 50:
+                    return 'RAISE_SMALL'
+                elif amount < 125:
+                    return 'RAISE_MEDIUM'
+                elif amount < 250:
+                    return 'RAISE_LARGE'
                 else:
-                    pot_fraction = 1.0  # Default to pot-sized
-                
-                # Map to closest pot-relative bucket
-                # Buckets: 25%, 50%, 75%, 100%, 150%, 200%, 250%, 300%, 350%, 400%, 450%, 500%
-                if pot_fraction <= 0.375:      # <= 37.5% -> 25%
-                    return 'RAISE_25_POT'
-                elif pot_fraction <= 0.625:    # <= 62.5% -> 50%
-                    return 'RAISE_50_POT'
-                elif pot_fraction <= 0.875:    # <= 87.5% -> 75%
-                    return 'RAISE_75_POT'
-                elif pot_fraction <= 1.25:     # <= 125% -> 100%
-                    return 'RAISE_100_POT'
-                elif pot_fraction <= 1.75:     # <= 175% -> 150%
-                    return 'RAISE_150_POT'
-                elif pot_fraction <= 2.25:     # <= 225% -> 200%
-                    return 'RAISE_200_POT'
-                elif pot_fraction <= 2.75:     # <= 275% -> 250%
-                    return 'RAISE_250_POT'
-                elif pot_fraction <= 3.25:     # <= 325% -> 300%
-                    return 'RAISE_300_POT'
-                elif pot_fraction <= 3.75:     # <= 375% -> 350%
-                    return 'RAISE_350_POT'
-                elif pot_fraction <= 4.25:     # <= 425% -> 400%
-                    return 'RAISE_400_POT'
-                elif pot_fraction <= 4.75:     # <= 475% -> 450%
-                    return 'RAISE_450_POT'
-                else:                          # > 475% -> 500%
-                    return 'RAISE_500_POT'
+                    return 'RAISE_ALL_IN'
             else:
                 # Fallback without state - use all-in as default
                 return "RAISE_ALL_IN"
@@ -383,6 +418,30 @@ class MCCFR:
                 return "DISCARD"
         return str(action)
 
+    def count_raises_this_round(self, state) -> int:
+        """
+        Count the number of raises in the current betting round.
+
+        Traverses the state's previous_state chain to count raise actions
+        on the current street.
+        """
+        count = 0
+        current_street = state.street
+        current = state
+
+        while hasattr(current, 'previous_state') and current.previous_state is not None:
+            prev = current.previous_state
+            # Stop if we've gone back to a different street
+            if hasattr(prev, 'street') and prev.street != current_street:
+                break
+            # Check if the action that led to current was a raise
+            if hasattr(current, 'action_taken') and current.action_taken is not None:
+                if is_raise_action(current.action_taken):
+                    count += 1
+            current = prev
+
+        return count
+
     def get_legal_actions_list(self, state, use_skeleton_actions: bool = None) -> List:
         """
         Get list of legal actions with concrete values.
@@ -394,6 +453,8 @@ class MCCFR:
 
         This method works with states from both custom_engine and skeleton/states.
         It automatically detects which action types to return based on the state type.
+
+        Raises are capped at MAX_RAISES_PER_ROUND per betting round to limit tree depth.
 
         Args:
             state: Current RoundState (from either custom_engine or skeleton)
@@ -408,11 +469,15 @@ class MCCFR:
         actions = []
         active = state.button % 2
 
+        # Check if raises are capped
+        raises_capped = self.count_raises_this_round(
+            state) >= MCCFR.MAX_RAISES_PER_ROUND
+
         # Auto-detect mode: training states have 'deck' attribute, skeleton states don't
         if use_skeleton_actions is None:
             # Training states (custom_engine) have 'deck' attribute
             use_skeleton_actions = not hasattr(state, 'deck')
-        
+
         # Select action constructors based on mode
         if use_skeleton_actions:
             fold_cls = SkeletonFoldAction
@@ -429,34 +494,33 @@ class MCCFR:
 
         for action_type in legal_action_types:
             action_name = action_type.__name__
-            
+
             if action_name == 'RaiseAction':
-                # Discretize raise space into 13 pot-relative sizes
-                # Pot-relative fractions: 25%, 50%, 75%, 100%, 150%, 200%-500% in 50% steps, plus all-in
+                # Skip raises if we've hit the per-round cap
+                if raises_capped:
+                    continue
+
+                # Discretize raise space into 5 absolute amount buckets
+                # Buckets: <15, 15-50, 50-125, 125-250, 250+
                 min_raise, max_raise = state.raise_bounds()
-                
-                # Calculate pot size
-                pot_from_previous_streets = (2 * STARTING_STACK) - sum(state.stacks)
-                pot_this_street = sum(state.pips)
-                pot = pot_from_previous_streets + pot_this_street
-                
-                # Pot-relative raise fractions (12 fractions + all-in)
-                pot_fractions = [0.25, 0.50, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0]
-                
+
+                # Representative amounts for each bucket (midpoints)
+                # 8, 30, 85, 180, then all-in
+                target_amounts = [8, 30, 85, 180]
+
                 raise_sizes = set()
-                for fraction in pot_fractions:
-                    target = int(pot * fraction)
+                for target in target_amounts:
                     # Clamp to legal bounds
                     clamped = max(min_raise, min(target, max_raise))
                     raise_sizes.add(clamped)
-                
+
                 # Always add all-in (max_raise)
                 raise_sizes.add(max_raise)
-                
+
                 # Sort and create actions
                 for size in sorted(raise_sizes):
                     actions.append(raise_cls(size))
-                    
+
             elif action_name == 'DiscardAction':
                 # All cards in hand can be discarded
                 for card_idx in range(len(state.hands[active])):
@@ -516,9 +580,9 @@ class MCCFR:
                 key: positive_regrets[key] / sum_positive for key in action_keys}
         else:
             # All regrets negative: pick action with HIGHEST regret (deterministically)
-            # 
-            # Paper Figure 4: "if the algorithm plays a uniform strategy when all 
-            # regrets are negative (i.e. standard regret matching), rather than the 
+            #
+            # Paper Figure 4: "if the algorithm plays a uniform strategy when all
+            # regrets are negative (i.e. standard regret matching), rather than the
             # highest-regret action, the final exploitability is also 50% higher."
             #
             # This deterministic choice reduces exploitability by ~50% vs uniform/softmax.
@@ -530,15 +594,24 @@ class MCCFR:
                 best_key = action_keys[max_idx]
                 # Assign probability 1 to that key, 0 to others
                 # Note: Using key comparison (not index) handles duplicate keys correctly
-                strategy = {key: 1.0 if key == best_key else 0.0 
-                           for key in action_keys}
+                strategy = {key: 1.0 if key == best_key else 0.0
+                            for key in action_keys}
             else:
                 strategy = {}
 
         return strategy
 
-    def external_sampling(self, state, traversing_player: int, 
-                          collect_deep_cfr_samples: bool = True) -> float:
+    # Maximum traversal depth to prevent infinite game trees
+    # With pot-relative raises, betting can technically continue forever
+    # Standard practice in poker AI is to truncate at reasonable depth
+    MAX_TRAVERSAL_DEPTH = 100  # Increased since we now have raise cap
+
+    # Maximum raises per betting round
+    # This dramatically reduces tree size by capping the betting depth
+    MAX_RAISES_PER_ROUND = 4
+
+    def external_sampling(self, state, traversing_player: int,
+                          collect_deep_cfr_samples: bool = True, _depth: int = 0) -> float:
         """
         External sampling MCCFR traversal (Deep CFR version).
 
@@ -555,6 +628,11 @@ class MCCFR:
         Returns:
             Utility value for traversing player at this node
         """
+        # Depth limit: truncate extremely deep game trees
+        # Return 0 (break-even estimate) when tree is too deep
+        if _depth >= MCCFR.MAX_TRAVERSAL_DEPTH:
+            return 0.0
+
         # Terminal state: return utility (check by name for cross-module compatibility)
         if is_terminal_state(state):
             return float(state.deltas[traversing_player])
@@ -593,7 +671,7 @@ class MCCFR:
                 action_key = self.action_to_key(action, state, active_player)
                 next_state = state.proceed(action)
                 action_values[action_key] = self.external_sampling(
-                    next_state, traversing_player, collect_deep_cfr_samples
+                    next_state, traversing_player, collect_deep_cfr_samples, _depth + 1
                 )
                 node_value += strategy[action_key] * action_values[action_key]
 
@@ -604,10 +682,10 @@ class MCCFR:
                 action_key = self.action_to_key(action, state, active_player)
                 regret = action_values[action_key] - node_value
                 instantaneous_regrets[action_key] = regret
-                
+
                 # Also update cumulative table for regret matching (backward compatibility)
                 self.regret_table[infoset][action_key] += regret
-            
+
             # Store in advantage memory for Deep CFR training
             # Paper: Insert (I, t, r̃_t(I)) into MV,p
             if collect_deep_cfr_samples:
@@ -617,7 +695,7 @@ class MCCFR:
                     'regrets': instantaneous_regrets,
                     'player': traversing_player
                 })
-            
+
             return node_value
         else:
             # Opponent's turn: sample action from strategy
@@ -626,7 +704,7 @@ class MCCFR:
             probs = [strategy[key] for key in action_keys]
             sampled_action = random.choices(
                 legal_actions, weights=probs, k=1)[0]
-            
+
             # Store strategy sample for strategy network (MΠ)
             # Paper: Insert (I, t, σ_t(I)) into MΠ
             if collect_deep_cfr_samples:
@@ -639,61 +717,62 @@ class MCCFR:
 
             # Recurse with sampled action
             next_state = state.proceed(sampled_action)
-            value = self.external_sampling(next_state, traversing_player, 
-                                          collect_deep_cfr_samples)
+            value = self.external_sampling(next_state, traversing_player,
+                                           collect_deep_cfr_samples, _depth + 1)
 
             # Update cumulative strategy (for legacy average strategy computation)
             for action in legal_actions:
                 action_key = self.action_to_key(action, state, active_player)
                 self.strategy_table[infoset][action_key] += strategy[action_key]
-            
+
             return value
 
     def external_sampling_with_network(self, state, traversing_player: int,
-                                        network_integrations: dict,
-                                        collect_deep_cfr_samples: bool = True) -> float:
+                                       network_integrations: dict,
+                                       collect_deep_cfr_samples: bool = True) -> float:
         """
         External sampling MCCFR using neural networks for regret prediction.
-        
+
         This is the proper Deep CFR algorithm per the paper:
         - At each infoset, use the NETWORK to predict regrets
         - Apply regret matching to get strategy
         - Explore according to that strategy
-        
+
         Args:
             state: Current game state (RoundState or TerminalState)
             traversing_player: Player whose regrets we're updating (0 or 1)
             network_integrations: Dict mapping player -> NetworkMCCFRIntegration
                                   {0: integration_p0, 1: integration_p1}
             collect_deep_cfr_samples: If True, collect samples for training
-            
+
         Returns:
             Utility value for traversing player at this node
         """
         # Terminal state: return utility
         if is_terminal_state(state):
             return float(state.deltas[traversing_player])
-        
+
         # Get information set
         active_player = state.button % 2
         state_id = id(state)
-        
+
         if state_id in self.infoset_cache:
             infoset = self.infoset_cache[state_id]
         else:
             infoset = self.get_infoset(state, active_player)
             self.infoset_cache[state_id] = infoset
-        
+
         # Get legal actions
         legal_actions = self.get_legal_actions_list(state)
         if not legal_actions:
             return 0.0
-        
+
         # KEY DIFFERENCE: Use NETWORK to predict regrets, not cumulative table!
         # Paper Algorithm 2: "Compute strategy σt(I) from predicted advantages V(I(h), a|θp)"
         network_integration = network_integrations[active_player]
-        predicted_regrets = network_integration.get_network_regrets(state, active_player)
-        
+        predicted_regrets = network_integration.get_network_regrets(
+            state, active_player)
+
         # Get strategy via regret matching on network predictions
         strategy = self.regret_matching(
             predicted_regrets,  # Network predictions, not self.regret_table!
@@ -701,13 +780,13 @@ class MCCFR:
             state,
             active_player
         )
-        
+
         # Check if it's the traversing player's turn
         if active_player == traversing_player:
             # Traversing player: compute regrets for ALL actions
             action_values = {}
             node_value = 0.0
-            
+
             # Compute value of each action (explore all)
             for action in legal_actions:
                 action_key = self.action_to_key(action, state, active_player)
@@ -716,7 +795,7 @@ class MCCFR:
                     next_state, traversing_player, network_integrations, collect_deep_cfr_samples
                 )
                 node_value += strategy[action_key] * action_values[action_key]
-            
+
             # Compute INSTANTANEOUS regrets
             # Paper: r̃_t(I,a) = v(a) - Σ σ(a')·v(a')
             instantaneous_regrets = {}
@@ -724,7 +803,7 @@ class MCCFR:
                 action_key = self.action_to_key(action, state, active_player)
                 regret = action_values[action_key] - node_value
                 instantaneous_regrets[action_key] = regret
-            
+
             # Store in advantage memory for training
             if collect_deep_cfr_samples:
                 self.advantage_memory[traversing_player].append({
@@ -733,14 +812,16 @@ class MCCFR:
                     'regrets': instantaneous_regrets,
                     'player': traversing_player
                 })
-            
+
             return node_value
         else:
             # Opponent's turn: sample ONE action from strategy
-            action_keys = [self.action_to_key(a, state, active_player) for a in legal_actions]
+            action_keys = [self.action_to_key(
+                a, state, active_player) for a in legal_actions]
             probs = [strategy[key] for key in action_keys]
-            sampled_action = random.choices(legal_actions, weights=probs, k=1)[0]
-            
+            sampled_action = random.choices(
+                legal_actions, weights=probs, k=1)[0]
+
             # Store strategy sample for strategy network (MΠ)
             if collect_deep_cfr_samples:
                 self.strategy_memory.append({
@@ -749,36 +830,36 @@ class MCCFR:
                     'strategy': dict(strategy),
                     'player': active_player
                 })
-            
+
             # Recurse with sampled action
             next_state = state.proceed(sampled_action)
             return self.external_sampling_with_network(
                 next_state, traversing_player, network_integrations, collect_deep_cfr_samples
             )
-    
+
     def set_iteration(self, iteration: int):
         """Set the current CFR iteration number (for linear weighting)."""
         self.current_iteration = iteration
-    
+
     def get_advantage_samples(self, player: int) -> list:
         """Get collected advantage samples for a player."""
         return self.advantage_memory[player]
-    
+
     def get_strategy_samples(self) -> list:
         """Get collected strategy samples for the strategy network."""
         return self.strategy_memory
-    
+
     def clear_advantage_memory(self, player: int = None):
         """Clear advantage memory (optionally for specific player)."""
         if player is not None:
             self.advantage_memory[player] = []
         else:
             self.advantage_memory = {0: [], 1: []}
-    
+
     def clear_strategy_memory(self):
         """Clear strategy memory."""
         self.strategy_memory = []
-    
+
     def clear_infoset_cache(self):
         """Clear infoset cache to free memory between iterations."""
         self.infoset_cache = {}
@@ -831,7 +912,7 @@ class MCCFR:
 
         for iteration in range(num_iterations):
             iter_start = time.time()
-            
+
             # Set current iteration for linear weighting
             self.set_iteration(iteration + 1)
 

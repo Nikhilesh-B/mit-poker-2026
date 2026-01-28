@@ -46,10 +46,12 @@ class DeepCFR:
         network_dim: int = 256,
         learning_rate: float = 0.001,
         batch_size: int = 10000,  # Paper: 10,000 (HULH uses 20,000)
-        use_network_after: int = 0,  # Paper: use network from iteration 1 (initialized to 0)
+        # Paper: use network from iteration 1 (initialized to 0)
+        use_network_after: int = 0,
         train_every: int = 1,  # Paper: train after EVERY iteration
         train_epochs: int = 5,
-        memory_limit: int = 10000000,  # 10M samples per player (paper uses 40M)
+        # 10M samples per player (paper uses 40M)
+        memory_limit: int = 10000000,
         training_device: str = "auto",  # "auto", "mps", "cuda", or "cpu"
         traversals_per_iter: int = 1000,  # Paper uses 10,000 for FHP
         sgd_iterations: int = 4000  # Paper uses 32,000 for HULH, 4,000 for FHP
@@ -177,7 +179,7 @@ class DeepCFR:
             nhandcards=3,
             nboardcards=6,  # 2 flop + 2 discards + turn + river = 6 max
             n_action_history=20,
-            nresponses=19,  # 3 discards + 3 basic + 13 pot-relative raises (25%-500% + all-in)
+            nresponses=11,  # 3 discards + 3 basic + 5 absolute raise buckets
             dim=dim
         )
 
@@ -305,7 +307,7 @@ class DeepCFR:
         # The key is to do this efficiently - process samples in batches if needed
         sample_counts = self._collect_samples_to_trainers()
         result.update(sample_counts)
-        
+
         # Train network if scheduled
         if self.should_train():
             train_result = self._train_network()
@@ -326,7 +328,7 @@ class DeepCFR:
         - Use network to predict regrets at each decision point
         - Strategy is computed from network predictions via regret matching
         - Samples are collected for training
-        
+
         The key insight is that the network generalizes across similar infosets,
         allowing exploration of states that tabular CFR couldn't reach.
         """
@@ -335,11 +337,11 @@ class DeepCFR:
             0: self.integrations[0],
             1: self.integrations[1]
         }
-        
+
         # Use the network-guided external sampling
         utility = self.mccfr.external_sampling_with_network(
-            state, 
-            traversing_player, 
+            state,
+            traversing_player,
             network_integrations,
             collect_deep_cfr_samples=True
         )
@@ -365,7 +367,7 @@ class DeepCFR:
         # Collect advantage samples - OPTIMIZED: batch process to reduce overhead
         for player in [0, 1]:
             samples_list = self.mccfr.get_advantage_samples(player)
-            
+
             # Process samples in batch - create all TrainingSample objects first, then add
             # This reduces overhead from repeated object creation
             samples_to_add = []
@@ -377,10 +379,11 @@ class DeepCFR:
                     iteration=sample_dict['iteration']
                 )
                 samples_to_add.append(sample)
-            
+
             # Add all samples (reservoir sampling handles memory limits)
             for sample in samples_to_add:
-                self.trainers[player].add_sample(sample)  # Uses reservoir sampling
+                self.trainers[player].add_sample(
+                    sample)  # Uses reservoir sampling
                 if player == 0:
                     new_samples_p0 += 1
                 else:
@@ -388,18 +391,19 @@ class DeepCFR:
 
         # Collect strategy samples - OPTIMIZED: batch process
         strategy_list = self.mccfr.get_strategy_samples()
-        
+
         # Batch create TrainingSample objects
         strategy_samples_to_add = []
         for sample_dict in strategy_list:
             sample = TrainingSample(
                 infoset=sample_dict['infoset'],
-                target_regrets=sample_dict['strategy'],  # Actually strategy probs
+                # Actually strategy probs
+                target_regrets=sample_dict['strategy'],
                 player=sample_dict['player'],
                 iteration=sample_dict['iteration']
             )
             strategy_samples_to_add.append(sample)
-        
+
         # Batch add to trainer
         for sample in strategy_samples_to_add:
             self.strategy_trainer.add_sample(sample)  # Uses reservoir sampling

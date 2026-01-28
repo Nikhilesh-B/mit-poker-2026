@@ -25,6 +25,7 @@ if current_dir not in sys.path:
 
 from core.deep_cfr import DeepCFR
 from training_monitor import TrainingMonitor
+from wandb_logger import WandbLogger, WANDB_AVAILABLE
 
 
 def train_model(
@@ -40,7 +41,11 @@ def train_model(
     training_device: str = "auto",
     traversals_per_iter: int = 1000,
     sgd_iterations: int = 4000,
-    verbose: bool = True
+    verbose: bool = True,
+    use_wandb: bool = False,
+    wandb_project: str = "deep-cfr",
+    wandb_name: str = None,
+    log_weights_every: int = 10
 ):
     """
     Train a Deep CFR model and save it.
@@ -59,6 +64,10 @@ def train_model(
         traversals_per_iter: Number of game traversals per CFR iteration (K in paper)
         sgd_iterations: SGD steps per training session (paper: 4000-32000)
         verbose: Print progress
+        use_wandb: Enable Weights & Biases logging
+        wandb_project: W&B project name
+        wandb_name: W&B run name (auto-generated if None)
+        log_weights_every: Log weight histograms every N iterations
     """
     # Get project root directory (parent of deep_CFR_vNB_integration)
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -96,6 +105,29 @@ def train_model(
     
     # Get the actual device being used
     actual_device = deep_cfr.trainers[0].training_device
+    
+    # Initialize W&B logger if enabled
+    wandb_logger = None
+    if use_wandb:
+        wandb_config = {
+            "iterations": iterations,
+            "network_dim": network_dim,
+            "learning_rate": learning_rate,
+            "batch_size": batch_size,
+            "use_network_after": use_network_after,
+            "train_every": train_every,
+            "train_epochs": train_epochs,
+            "traversals_per_iter": traversals_per_iter,
+            "sgd_iterations": sgd_iterations,
+            "training_device": str(actual_device),
+        }
+        wandb_logger = WandbLogger(
+            project=wandb_project,
+            name=wandb_name,
+            config=wandb_config,
+            enabled=True,
+            log_weights_every=log_weights_every
+        )
     
     # Start training with monitor
     monitor.start_training(iterations)
@@ -143,12 +175,25 @@ def train_model(
             if verbose:
                 print()  # Newline before training output
             monitor.log_iteration(i + 1, result, verbose=verbose)
-        elif verbose:
-            # Clear the line and show completion for non-training iterations
-            new_p0 = result.get('new_samples_p0', 0)
-            new_p1 = result.get('new_samples_p1', 0)
-            traversals = result.get('traversals', 0)
-            print(f"\rIter {i+1:4d}/{iterations} - {traversals} traversals -> {new_p0}/{new_p1} samples (P0/P1)\033[K")
+            
+            # W&B logging
+            if wandb_logger:
+                wandb_logger.log_iteration(i + 1, result)
+                # Log network weights periodically
+                wandb_logger.log_weights(deep_cfr.strategy_network, "strategy", i + 1)
+                wandb_logger.log_weights(deep_cfr.networks[0], "value_p0", i + 1)
+                wandb_logger.log_weights(deep_cfr.networks[1], "value_p1", i + 1)
+        else:
+            # Log sample collection even on non-training iterations
+            if wandb_logger:
+                wandb_logger.log_iteration(i + 1, result)
+            
+            if verbose:
+                # Clear the line and show completion for non-training iterations
+                new_p0 = result.get('new_samples_p0', 0)
+                new_p1 = result.get('new_samples_p1', 0)
+                traversals = result.get('traversals', 0)
+                print(f"\rIter {i+1:4d}/{iterations} - {traversals} traversals -> {new_p0}/{new_p1} samples (P0/P1)\033[K")
             
         # Check if this is the best model
         avg_loss = (result.get('loss_p0', 0) + result.get('loss_p1', 0)) / 2
@@ -161,6 +206,10 @@ def train_model(
     
     # Training complete
     monitor.log_training_complete()
+    
+    # Finish W&B logging
+    if wandb_logger:
+        wandb_logger.finish()
     
     # Save final model
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -254,6 +303,24 @@ def main():
         help='SGD iterations per training session (default: 4000, paper HULH uses 32000)'
     )
     
+    # Weights & Biases arguments
+    parser.add_argument(
+        '--wandb', action='store_true',
+        help='Enable Weights & Biases logging'
+    )
+    parser.add_argument(
+        '--wandb-project', type=str, default='deep-cfr',
+        help='W&B project name (default: deep-cfr)'
+    )
+    parser.add_argument(
+        '--wandb-name', type=str, default=None,
+        help='W&B run name (auto-generated if not specified)'
+    )
+    parser.add_argument(
+        '--log-weights-every', type=int, default=10,
+        help='Log weight histograms every N iterations (default: 10)'
+    )
+    
     args = parser.parse_args()
     
     train_model(
@@ -269,7 +336,11 @@ def main():
         training_device=args.device,
         traversals_per_iter=args.traversals,
         sgd_iterations=args.sgd_steps,
-        verbose=not args.quiet
+        verbose=not args.quiet,
+        use_wandb=args.wandb,
+        wandb_project=args.wandb_project,
+        wandb_name=args.wandb_name,
+        log_weights_every=args.log_weights_every
     )
 
 

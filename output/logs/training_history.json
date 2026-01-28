@@ -1,38 +1,14 @@
 {
-  "iterations": [
-    3
-  ],
-  "loss_p0": [
-    44462.29244140625
-  ],
-  "loss_p1": [
-    16.77873636633158
-  ],
-  "loss_strategy": [
-    0.9356872189044952
-  ],
-  "samples_p0": [
-    673
-  ],
-  "samples_p1": [
-    8
-  ],
-  "samples_strategy": [
-    2237
-  ],
-  "time_per_iter": [
-    2.854339122772217
-  ],
-  "timestamps": [
-    "2026-01-26T22:48:59.686919"
-  ],
-  "loss_start_strategy": [
-    1.766260027885437
-  ],
-  "loss_end_strategy": [
-    1.1295890808105469
-  ],
-  "loss_reduction_strategy": [
-    36.046275011789255
-  ]
+  "iterations": [],
+  "loss_p0": [],
+  "loss_p1": [],
+  "loss_strategy": [],
+  "samples_p0": [],
+  "samples_p1": [],
+  "samples_strategy": [],
+  "time_per_iter": [],
+  "timestamps": [],
+  "loss_start_strategy": [],
+  "loss_end_strategy": [],
+  "loss_reduction_strategy": []
 }

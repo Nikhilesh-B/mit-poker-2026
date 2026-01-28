@@ -58,7 +58,7 @@ def test_network_creates_successfully():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=19,
+        nresponses=11,
         dim=256
     )
     assert isinstance(network, torch.nn.Module)
@@ -71,7 +71,7 @@ def test_network_parameter_count():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=19,
+        nresponses=11,
         dim=256
     )
     params = sum(p.numel() for p in network.parameters() if p.requires_grad)
@@ -85,7 +85,7 @@ def test_network_embedding_layers():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=19,
+        nresponses=11,
         dim=256
     )
     assert len(network.hand_embeddings) == 3, "Should have 3 hand card embeddings"
@@ -110,7 +110,7 @@ def test_forward_pass_preflop():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=19,
+        nresponses=11,
         dim=256
     )
     network.eval()
@@ -135,7 +135,7 @@ def test_forward_pass_with_board():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=19,
+        nresponses=11,
         dim=256
     )
     network.eval()
@@ -158,7 +158,7 @@ def test_forward_pass_with_action_history():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=19,
+        nresponses=11,
         dim=256
     )
     network.eval()
@@ -193,7 +193,7 @@ def test_batch_forward_pass():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=19,
+        nresponses=11,
         dim=256
     )
     network.eval()
@@ -222,7 +222,7 @@ def test_batch_size_10():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=19,
+        nresponses=11,
         dim=256
     )
     network.eval()
@@ -262,7 +262,7 @@ def test_with_real_mccfr_infosets():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=19,
+        nresponses=11,
         dim=256
     )
     network.eval()
@@ -293,7 +293,7 @@ def test_with_mccfr_game_progression():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=19,
+        nresponses=11,
         dim=256
     )
     network.eval()
@@ -332,16 +332,16 @@ def test_action_history_empty():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=19,
+        nresponses=11,
         dim=256
     )
 
     # Encode empty action history
     encoded = network._encode_action_history("")
 
-    # Should be all zeros (padding)
+    # Should be all zeros (padding) - 20 actions * 17 features = 340
     assert encoded.shape == torch.Size(
-        [120]), f"Expected shape [120] (20*6), got {encoded.shape}"
+        [340]), f"Expected shape [340] (20*17), got {encoded.shape}"
     assert torch.all(encoded == 0.0), "Empty history should be all zeros"
 
 
@@ -351,27 +351,37 @@ def test_action_history_single_action():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=19,
+        nresponses=11,
         dim=256
     )
 
-    # Test each action type
+    # Test each action type (17 total: 4 base + 13 raises)
     test_cases = [
-        ('X', 0),  # check
-        ('C', 1),  # call
-        ('F', 2),  # fold
-        ('D', 3),  # discard
-        ('r', 4),  # raise small
-        ('R', 5),  # raise medium
-        ('B', 5),  # raise large (maps to medium)
+        ('X', 0),   # check
+        ('C', 1),   # call
+        ('F', 2),   # fold
+        ('D', 3),   # discard
+        ('1', 4),   # raise 25% pot
+        ('2', 5),   # raise 50% pot
+        ('3', 6),   # raise 75% pot
+        ('4', 7),   # raise 100% pot
+        ('5', 8),   # raise 150% pot
+        ('6', 9),   # raise 200% pot
+        ('7', 10),  # raise 250% pot
+        ('8', 11),  # raise 300% pot
+        ('9', 12),  # raise 350% pot
+        ('T', 13),  # raise 400% pot
+        ('E', 14),  # raise 450% pot
+        ('W', 15),  # raise 500% pot
+        ('Z', 16),  # raise all-in
     ]
 
     for action_char, expected_idx in test_cases:
         encoded = network._encode_action_history(action_char)
 
-        # First 6 values should be the one-hot encoding
-        first_action = encoded[:6]
-        expected = torch.zeros(6)
+        # First 17 values should be the one-hot encoding
+        first_action = encoded[:17]
+        expected = torch.zeros(17)
         expected[expected_idx] = 1.0
 
         assert torch.allclose(first_action, expected), \
@@ -384,21 +394,22 @@ def test_action_history_long_sequence():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=19,
+        nresponses=11,
         dim=256
     )
 
     # Create action history longer than n_action_history
-    long_history = "CRBXDFCRBXDFCRBXDFCRBXDF"  # 24 chars
+    # Using new raise characters: C=call, 4=100% raise, Z=all-in, X=check, D=discard, F=fold
+    long_history = "C4ZXDFC4ZXDFC4ZXDFC4ZXDF"  # 24 chars
     encoded = network._encode_action_history(long_history)
 
-    # Should truncate to 20 actions
+    # Should truncate to 20 actions, with 17 features each = 340 total
     assert encoded.shape == torch.Size(
-        [120]), f"Expected shape [120], got {encoded.shape}"
+        [340]), f"Expected shape [340], got {encoded.shape}"
 
     # Verify first action is encoded correctly (C = call = index 1)
-    first_action = encoded[:6]
-    expected = torch.zeros(6)
+    first_action = encoded[:17]
+    expected = torch.zeros(17)
     expected[1] = 1.0  # C = call
     assert torch.allclose(first_action, expected)
 
@@ -420,7 +431,7 @@ def test_empty_board_preflop():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=19,
+        nresponses=11,
         dim=256
     )
     network.eval()
@@ -443,7 +454,7 @@ def test_all_same_suit():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=19,
+        nresponses=11,
         dim=256
     )
     network.eval()
@@ -468,7 +479,7 @@ def test_output_values_are_finite():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=19,
+        nresponses=11,
         dim=256
     )
     network.eval()
@@ -501,7 +512,7 @@ def test_deterministic_output():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=19,
+        nresponses=11,
         dim=256
     )
     network.eval()
@@ -524,7 +535,7 @@ def test_different_inputs_different_outputs():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=19,
+        nresponses=11,
         dim=256
     )
     network.eval()
@@ -550,7 +561,7 @@ def test_gradient_flow():
         nhandcards=3,
         nboardcards=5,
         n_action_history=20,
-        nresponses=19,
+        nresponses=11,
         dim=256
     )
     network.train()

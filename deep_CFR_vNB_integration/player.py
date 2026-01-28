@@ -55,7 +55,7 @@ class Player(Bot):
                 f"Train a model first with: python train_model.py\n"
                 f"Or specify a model with: --model <filename>"
             )
-        
+
         try:
             print(f"Loading Deep CFR model from {model_path}...")
             model_data = torch.load(model_path, map_location='cpu')
@@ -68,7 +68,7 @@ class Player(Bot):
                 nhandcards=3,
                 nboardcards=6,  # 2 flop + 2 discards + turn + river = 6 max
                 n_action_history=20,
-                nresponses=19,  # 3 discards + 3 basic + 13 pot-relative raises (25%-500% + all-in)
+                nresponses=11,  # 3 discards + 3 basic + 5 absolute raise buckets
                 dim=network_dim
             )
 
@@ -92,7 +92,8 @@ class Player(Bot):
             self.integration = NetworkMCCFRIntegration(
                 network=self.network,
                 mccfr=self.mccfr,
-                is_strategy_network=True  # Strategy network outputs are logits (per paper Section 5.1)
+                # Strategy network outputs are logits (per paper Section 5.1)
+                is_strategy_network=True
             )
 
             self.model_loaded = True

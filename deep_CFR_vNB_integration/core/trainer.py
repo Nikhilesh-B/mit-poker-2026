@@ -263,9 +263,9 @@ class DeepCFRTrainer:
         """
         Prepare a batch of samples for training.
 
-        With pot-relative action keys, we no longer need a dummy state for
+        With absolute amount bucket action keys, we no longer need a dummy state for
         converting regrets to tensors. The regrets_dict already contains
-        pot-relative keys that map directly to network output indices.
+        absolute bucket keys (RAISE_TINY, RAISE_SMALL, etc.) that map directly to network output indices.
 
         Args:
             batch_samples: List of TrainingSample objects
@@ -282,7 +282,7 @@ class DeepCFRTrainer:
         legal_masks = []
 
         for sample in batch_samples:
-            # Convert pot-relative regrets dict to tensor (no state needed!)
+            # Convert absolute bucket regrets dict to tensor (no state needed!)
             target_tensor = regrets_dict_to_tensor(sample.target_regrets)
             target_tensors.append(target_tensor)
             iterations.append(sample.iteration)
@@ -294,7 +294,7 @@ class DeepCFRTrainer:
                 street, sample.target_regrets))
 
         # Stack into batch
-        target_batch = torch.stack(target_tensors)  # [batch_size, 19]
+        target_batch = torch.stack(target_tensors)  # [batch_size, 11]
 
         # Create iteration weights for linear weighting
         # Paper: weight each sample by iteration t' (later iterations weighted more)
@@ -303,7 +303,7 @@ class DeepCFRTrainer:
 
         # Create legal action mask tensor
         legal_mask = torch.tensor(
-            legal_masks, dtype=torch.float32)  # [batch_size, 19]
+            legal_masks, dtype=torch.float32)  # [batch_size, 11]
 
         return cc_list, ah_list, target_batch, iteration_weights, legal_mask
 

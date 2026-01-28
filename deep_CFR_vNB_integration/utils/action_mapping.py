@@ -216,7 +216,10 @@ def apply_legal_action_mask(regret_dict: Dict[str, float],
                             active_player: int,
                             mccfr_instance) -> Dict[str, float]:
     """
-    Mask out illegal actions by setting their regrets to very negative values.
+    Mask out illegal actions by setting their regrets to zero.
+
+    This prevents gradients from flowing through illegal actions while keeping
+    the values at zero (not very negative) so they don't affect softmax calculations.
 
     Args:
         regret_dict: Dictionary mapping action_key -> regret (from network)
@@ -226,7 +229,7 @@ def apply_legal_action_mask(regret_dict: Dict[str, float],
         mccfr_instance: MCCFR instance (for action_to_key method)
 
     Returns:
-        Dictionary with illegal actions masked (set to -1000.0)
+        Dictionary with illegal actions masked (set to 0.0)
     """
     legal_action_keys = {
         mccfr_instance.action_to_key(action, state, active_player)
@@ -238,7 +241,7 @@ def apply_legal_action_mask(regret_dict: Dict[str, float],
         if action_key in legal_action_keys:
             masked_regrets[action_key] = regret
         else:
-            masked_regrets[action_key] = -1000.0
+            masked_regrets[action_key] = 0.0  # Zero out illegal actions
 
     return masked_regrets
 

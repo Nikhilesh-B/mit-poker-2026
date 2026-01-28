@@ -64,7 +64,7 @@ class NetworkMCCFRIntegration:
 
         # Step 3: Get network prediction
         with torch.no_grad():
-            network_output = self.network(cc, ah)  # Shape: [1, 19]
+            network_output = self.network(cc, ah)  # Shape: [1, 11]
 
         # Step 4: Convert to MCCFR action keys
         regret_dict = map_network_output_to_actions(
@@ -93,29 +93,34 @@ class NetworkMCCFRIntegration:
         Per paper Section 5.1: "In the average strategy network, outputs are 
         interpreted as logits of the probability distribution over actions."
 
+        IMPORTANT: Softmax is computed ONLY over legal actions. Illegal actions
+        are excluded from the softmax calculation to ensure proper probability
+        distribution over valid actions only.
+
         Args:
             state: Current RoundState
             player: Player index (0 or 1)
 
         Returns:
-            Dictionary mapping action_key -> probability
+            Dictionary mapping action_key -> probability (only for legal actions)
         """
         # Get raw network output (logits)
+        # Note: get_network_regrets already masks illegal actions to 0.0
         regret_dict = self.get_network_regrets(state, player)
 
-        # Get legal actions
+        # Get legal actions - we only compute softmax over these
         legal_actions = self.mccfr.get_legal_actions_list(state)
 
-        # Convert to tensor for softmax
+        # Convert to tensor for softmax - ONLY using legal actions
         action_keys = [self.mccfr.action_to_key(
             a, state, player) for a in legal_actions]
         logits = torch.tensor([regret_dict.get(key, 0.0)
                               for key in action_keys], dtype=torch.float32)
 
-        # Apply softmax to convert logits to probabilities
+        # Apply softmax ONLY over legal actions (illegal actions excluded)
         probs = F.softmax(logits, dim=0)
 
-        # Convert back to dictionary
+        # Convert back to dictionary (only contains legal actions)
         strategy = {key: float(probs[i]) for i, key in enumerate(action_keys)}
 
         return strategy

@@ -189,27 +189,18 @@ class MCCFR:
                 elif is_discard_action(action):
                     history.append('D')
                 elif is_raise_action(action):
-                    # Bucket bet sizes into 13 categories (matching output action space)
-                    pot_from_previous_streets = (
-                        2 * STARTING_STACK) - sum(prev.stacks)
-                    pot_this_street = sum(prev.pips)
-                    pot_before_bet = pot_from_previous_streets + pot_this_street
-
+                    # Use ABSOLUTE AMOUNT buckets (matching network output: 5 raise buckets)
                     bet_amount = max(current.pips) - max(prev.pips)
 
                     # Check for all-in first
                     if hasattr(prev, 'raise_bounds'):
                         _, max_raise = prev.raise_bounds()
-                        if bet_amount >= max_raise:
-                            history.append('Z')  # All-in
+                        if bet_amount >= max_raise or bet_amount >= 250:
+                            history.append('Z')  # RAISE_ALL_IN
                             continue
 
-                    if pot_before_bet > 0:
-                        bet_to_pot_ratio = bet_amount / pot_before_bet
-                        history.append(
-                            self._pot_ratio_to_char(bet_to_pot_ratio))
-                    else:
-                        history.append('4')  # Default to 100% pot
+                    # Map to absolute amount bucket character
+                    history.append(self._absolute_amount_to_char(bet_amount))
 
             # Method 2: Reconstruct action from state differences (live play with skeleton/states)
             else:
@@ -219,7 +210,6 @@ class MCCFR:
 
             current = prev
 
-
         # Reverse to get chronological order
         history.reverse()
         history_str = ''.join(history[-20:])  # Keep last 20 actions
@@ -228,42 +218,31 @@ class MCCFR:
         infoset = f"S{street}|H:{hand_str}|B:{board_str}|A:{history_str}"
         return infoset
 
-    def _pot_ratio_to_char(self, pot_ratio: float) -> str:
+    def _absolute_amount_to_char(self, amount: int) -> str:
         """
-        Convert pot ratio to single character for action history encoding.
+        Convert absolute raise amount to single character for action history encoding.
 
-        Uses 13 buckets matching the output action space:
-        '1' = 25%, '2' = 50%, ..., '9' = 350%, 'T' = 400%, 'E' = 450%, 'W' = 500%, 'Z' = all-in
+        Uses 5 absolute amount buckets matching the network output:
+        '1' = RAISE_TINY (<15), '2' = RAISE_SMALL (15-50), '3' = RAISE_MEDIUM (50-125),
+        '4' = RAISE_LARGE (125-250), 'Z' = RAISE_ALL_IN (250+)
 
-        Bucket boundaries are at midpoints (same as action_to_key):
-        - <= 0.375 -> '1' (25%)
-        - <= 0.625 -> '2' (50%)
-        - etc.
+        Bucket boundaries match action_to_key and action_mapping.py:
+        - < 15 -> '1' (RAISE_TINY)
+        - 15-50 -> '2' (RAISE_SMALL)
+        - 50-125 -> '3' (RAISE_MEDIUM)
+        - 125-250 -> '4' (RAISE_LARGE)
+        - 250+ -> 'Z' (RAISE_ALL_IN, handled separately in caller)
         """
-        if pot_ratio <= 0.375:
-            return '1'  # 25%
-        elif pot_ratio <= 0.625:
-            return '2'  # 50%
-        elif pot_ratio <= 0.875:
-            return '3'  # 75%
-        elif pot_ratio <= 1.25:
-            return '4'  # 100%
-        elif pot_ratio <= 1.75:
-            return '5'  # 150%
-        elif pot_ratio <= 2.25:
-            return '6'  # 200%
-        elif pot_ratio <= 2.75:
-            return '7'  # 250%
-        elif pot_ratio <= 3.25:
-            return '8'  # 300%
-        elif pot_ratio <= 3.75:
-            return '9'  # 350%
-        elif pot_ratio <= 4.25:
-            return 'T'  # 400%
-        elif pot_ratio <= 4.75:
-            return 'E'  # 450%
+        if amount < 15:
+            return '1'  # RAISE_TINY
+        elif amount < 50:
+            return '2'  # RAISE_SMALL
+        elif amount < 125:
+            return '3'  # RAISE_MEDIUM
+        elif amount < 250:
+            return '4'  # RAISE_LARGE
         else:
-            return 'W'  # 500%+ (but not all-in, which is handled separately)
+            return 'Z'  # RAISE_ALL_IN (should be caught earlier, but fallback)
 
     def _infer_action_from_state_diff(self, current, prev) -> Optional[str]:
         """
@@ -313,19 +292,11 @@ class MCCFR:
                     # This is a bet or raise - check for all-in first
                     if hasattr(prev, 'raise_bounds'):
                         _, max_raise = prev.raise_bounds()
-                        if bet_amount >= max_raise:
-                            return 'Z'  # All-in
+                        if bet_amount >= max_raise or bet_amount >= 250:
+                            return 'Z'  # RAISE_ALL_IN
 
-                    pot_from_previous_streets = (
-                        2 * STARTING_STACK) - sum(prev.stacks)
-                    pot_this_street = sum(prev.pips)
-                    pot_before_bet = pot_from_previous_streets + pot_this_street
-
-                    if pot_before_bet > 0:
-                        bet_to_pot_ratio = bet_amount / pot_before_bet
-                        return self._pot_ratio_to_char(bet_to_pot_ratio)
-                    else:
-                        return '4'  # Default to 100% pot
+                    # Use absolute amount bucket
+                    return self._absolute_amount_to_char(bet_amount)
                 else:
                     # Bet amount is 0 or negative - likely a call
                     return 'C'
@@ -348,15 +319,12 @@ class MCCFR:
         This method works with action instances from both custom_engine and 
         skeleton.actions modules by checking type names instead of identity.
 
-        For raises, uses GEOMETRIC POT-RELATIVE bucket keys:
-        - RAISE_TINY: < 25% pot
-        - RAISE_SMALL: 25-50% pot
-        - RAISE_MEDIUM: 50-100% pot
-        - RAISE_POT: 100-200% pot
-        - RAISE_LARGE: 200-800% pot
-        - RAISE_HUGE: 800-2000% pot
-        - RAISE_MASSIVE: 2000-4000% pot
-        - RAISE_ALL_IN: >= 4000% pot or actual all-in
+        For raises, uses ABSOLUTE AMOUNT bucket keys (matching network output):
+        - RAISE_TINY: < 15 chips
+        - RAISE_SMALL: 15-50 chips
+        - RAISE_MEDIUM: 50-125 chips
+        - RAISE_LARGE: 125-250 chips
+        - RAISE_ALL_IN: 250+ chips or actual all-in
 
         Args:
             action: Action instance (FoldAction, CallAction, etc.)
@@ -447,7 +415,7 @@ class MCCFR:
         Get list of legal actions with concrete values.
 
         Action abstraction:
-        - Raises: 7 pot-relative sizes (25%, 50%, 75%, 100%, 150%, 200%, all-in)
+        - Raises: 5 absolute amount buckets (<15, 15-50, 50-125, 125-250, 250+ chips)
         - Discards: All cards in hand
         - Check/Call/Fold: Single action each
 
@@ -602,9 +570,11 @@ class MCCFR:
         return strategy
 
     # Maximum traversal depth to prevent infinite game trees
-    # With pot-relative raises, betting can technically continue forever
-    # Standard practice in poker AI is to truncate at reasonable depth
-    MAX_TRAVERSAL_DEPTH = 100  # Increased since we now have raise cap
+    # With absolute amount raises and MAX_RAISES_PER_ROUND cap, betting is bounded
+    # In MCCFR external sampling, we only explore all actions at traversing player nodes;
+    # at opponent nodes we sample one path, so tree size is much smaller than full exploration
+    # Depth 30 should cover full game (6 streets with multiple betting rounds)
+    MAX_TRAVERSAL_DEPTH = 30
 
     # Maximum raises per betting round
     # This dramatically reduces tree size by capping the betting depth

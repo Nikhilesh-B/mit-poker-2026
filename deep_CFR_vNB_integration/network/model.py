@@ -47,8 +47,8 @@ class DeepCFRModule(nn.Module):
 
         # Action history layers (analogous to "bet branch" in paper)
         # Paper: bet1 and bet2 with skip on bet2
-        # 17 features per action: check, call, fold, discard, + 13 raise sizes (25%-500% + all-in)
-        self.actions_layer1 = nn.Linear(n_action_history*17, dim)
+        # 9 features per action: check, call, fold, discard, + 5 absolute raise buckets
+        self.actions_layer1 = nn.Linear(n_action_history*9, dim)
         self.actions_layer2 = nn.Linear(dim, dim)  # Skip connection here
 
         # Combined trunk layers (paper: comb1, comb2, comb3 with skips on comb2, comb3)
@@ -96,31 +96,24 @@ class DeepCFRModule(nn.Module):
             action_history_str: String representation of action history
             device: Device to create tensor on (defaults to CPU)
 
-        Each action is one-hot encoded as 17 features:
-        [check, call, fold, discard, raise_25, raise_50, raise_75, raise_100, raise_150,
-         raise_200, raise_250, raise_300, raise_350, raise_400, raise_450, raise_500, raise_all_in]
+        Each action is one-hot encoded as 9 features:
+        [check, call, fold, discard, raise_tiny, raise_small, raise_medium, raise_large, raise_all_in]
 
-        Raise characters: '1'-'9' for 25%-350%, 'T'=400%, 'E'=450%, 'W'=500%, 'Z'=all-in
+        Raise characters (absolute amount buckets):
+        '1' = RAISE_TINY (<15 chips), '2' = RAISE_SMALL (15-50), '3' = RAISE_MEDIUM (50-125),
+        '4' = RAISE_LARGE (125-250), 'Z' = RAISE_ALL_IN (250+)
         """
-        # Map action characters to indices (17 features total: 4 base + 13 raises)
+        # Map action characters to indices (9 features total: 4 base + 5 absolute raise buckets)
         action_map = {
             'X': 0,   # check
             'C': 1,   # call
             'F': 2,   # fold
             'D': 3,   # discard
-            '1': 4,   # raise 25% pot
-            '2': 5,   # raise 50% pot
-            '3': 6,   # raise 75% pot
-            '4': 7,   # raise 100% pot
-            '5': 8,   # raise 150% pot
-            '6': 9,   # raise 200% pot
-            '7': 10,  # raise 250% pot
-            '8': 11,  # raise 300% pot
-            '9': 12,  # raise 350% pot
-            'T': 13,  # raise 400% pot
-            'E': 14,  # raise 450% pot
-            'W': 15,  # raise 500% pot
-            'Z': 16,  # raise all-in
+            '1': 4,   # RAISE_TINY (<15 chips)
+            '2': 5,   # RAISE_SMALL (15-50 chips)
+            '3': 6,   # RAISE_MEDIUM (50-125 chips)
+            '4': 7,   # RAISE_LARGE (125-250 chips)
+            'Z': 8,   # RAISE_ALL_IN (250+ chips)
         }
 
         # Convert string to list of characters
@@ -131,10 +124,10 @@ class DeepCFRModule(nn.Module):
         while len(all_actions) < self.n_action_history:
             all_actions.append('')  # Empty action (all zeros)
 
-        # One-hot encode each action as 17 features
+        # One-hot encode each action as 9 features
         features = []
         for action_char in all_actions:
-            one_hot = [0.0] * 17
+            one_hot = [0.0] * 9
             if action_char in action_map:
                 idx = action_map[action_char]
                 one_hot[idx] = 1.0

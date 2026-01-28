@@ -51,13 +51,31 @@ del f
 # %% Opponents
 
 # Bot Class Options
-OPPONENT1 = TrainingBots.PlayerSkeleton()
-OPPONENT2 = TrainingBots.PlayerCeylan_v1()
-OPPONENT3 = TrainingBots.PlayerHenry_v1()
-OPPONENT4 = TrainingBots.PlayerHenry_v2()
-OPPONENT5 = TrainingBots.MyRLBot_v0()
+_OPPONENT1 = TrainingBots.PlayerSkeleton()
+_OPPONENT2 = TrainingBots.PlayerCeylan_v1()
+_OPPONENT3 = TrainingBots.PlayerHenry_v1()
+_OPPONENT4 = TrainingBots.PlayerHenry_v2()
+_OPPONENT5 = TrainingBots.MyRLBot_v0()
+_OPPONENT6 = TrainingBots.MyRLBot_v1()
 
-OPPONENT = TrainingBots.PlayerHenry_v1()
+
+def get_opponent(opp_idx=3):
+    global OPPONENT
+    
+    # Put 3 for initial training, and 6 for later training.
+    # Or maybe 4, but that's untested.
+    if opp_idx == 2:
+        OPPONENT = TrainingBots.PlayerCeylan_v1()
+    elif opp_idx == 3:
+        OPPONENT = TrainingBots.PlayerHenry_v1()
+    elif opp_idx == 4:
+        OPPONENT = TrainingBots.PlayerHenry_v2()
+    elif opp_idx == 5:
+        OPPONENT = TrainingBots.MyRLBot_v0()
+    elif opp_idx == 6:
+        OPPONENT = TrainingBots.MyRLBot_v1()
+    else:
+        OPPONENT = TrainingBots.PlayerSkeleton()
 
 
 # %% Custom Game Engine
@@ -413,9 +431,11 @@ class PokerGame():
         return round_end, rl_fold
         
         
-    def start_game(self, Opp=OPPONENT):
+    def start_game(self, Opp_Idx=3):
+        get_opponent(Opp_Idx)
+        
         # Reset Opponent
-        self.Opp = Opp
+        self.Opp = OPPONENT
         
         self.round_no = 0
         
@@ -518,6 +538,10 @@ class PokerGame():
         if self.round_no >= NUM_ROUNDS:
             game_end = True
             
+        if _DEBUG_PRINT:
+            print('\nChecking Game Over')
+            print('Is game over:', game_end)
+            
         return game_end
     
     def end_game(self):
@@ -568,7 +592,7 @@ class PokerGame():
             (self.player_turn == 1) and (self.sb == 'oppo'))
         return rl_turn
     
-    def move_game_forward(self, rl_action=None, Opp=OPPONENT):
+    def move_game_forward(self, rl_action=None, Opp_Idx=3):
         game_over, mean_win, std_win, sharpe = False, 0, 0, 0
         
         if self.is_rl_turn():
@@ -583,7 +607,7 @@ class PokerGame():
             
             if game_over:
                 mean_win, std_win, sharpe = self.end_game()
-                self.start_game(Opp=Opp)
+                self.start_game(Opp_Idx=Opp_Idx)
                 
             self.start_round()
             

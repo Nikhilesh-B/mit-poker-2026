@@ -39,6 +39,8 @@ RAISE_POT_MULTI = [0.4, 0.8, 1.2]
 ROUND_REWARD_SCALER = 0.05
 GAME_OVER_REWARD_SCALER = 5
 
+FIXED_BOT_NO_GAMES_TRAIN = 300
+
 def keystoint(x):
     return {int(k): v for k, v in x.items()}
 def valstoint(x):
@@ -63,6 +65,9 @@ class TossHold(gym.Env):
 # TODO:     # Hand Eval: From 'pkrbot'
 # TODO:     # Win Probability
 # TODO:     # Pot Odds
+
+        # For switching Opponents
+        self.global_counter = 0
 
         self.henry_rank_map = {
             "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9,
@@ -166,7 +171,21 @@ class TossHold(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         
-        self.Game.start_game()
+        self.global_counter += 1
+        
+        # After 250 games, switch to self play?
+        if self.global_counter <= FIXED_BOT_NO_GAMES_TRAIN:
+            Opp_Idx = 3
+        else:
+            # 80% Self-Play, 20% Previous Bot
+            threshold = np.random.rand(1)[0]
+            if threshold < 0.201:
+                Opp_Idx = 3
+            else:
+                Opp_Idx = 6
+        
+        print(f'Opponent: {Opp_Idx}')
+        self.Game.start_game(Opp_Idx=Opp_Idx)
         self.Game.start_round()
         
         observation = self._get_obs()
@@ -324,6 +343,8 @@ class TossHold(gym.Env):
             return RaiseAction(STARTING_STACK)
         
     def step(self, action):
+        # print("DEBUG: Step start")
+        
         # Default
         reward = 0.0
         
@@ -374,6 +395,7 @@ class TossHold(gym.Env):
                         reward += -10
                     else:
                         reward += sharpe*GAME_OVER_REWARD_SCALER
+                    break
                 else:
                     self.Game.start_round()
         
@@ -408,7 +430,8 @@ class TossHold(gym.Env):
         
         if self.do_i_render_at_step:
             self.render()
-
+        
+        # print(f"DEBUG: Step end. Done: {terminated}")
         return observation, reward, terminated, truncated, info
     
     def render(self):

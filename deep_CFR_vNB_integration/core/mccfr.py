@@ -729,7 +729,8 @@ class MCCFR:
 
     def external_sampling_with_network(self, state, traversing_player: int,
                                        network_integrations: dict,
-                                       collect_deep_cfr_samples: bool = True) -> float:
+                                       collect_deep_cfr_samples: bool = True,
+                                       _depth: int = 0) -> float:
         """
         External sampling MCCFR using neural networks for regret prediction.
 
@@ -744,10 +745,16 @@ class MCCFR:
             network_integrations: Dict mapping player -> NetworkMCCFRIntegration
                                   {0: integration_p0, 1: integration_p1}
             collect_deep_cfr_samples: If True, collect samples for training
+            _depth: Current recursion depth (for preventing infinite loops)
 
         Returns:
             Utility value for traversing player at this node
         """
+        # Depth limit: truncate extremely deep game trees
+        # Return 0 (break-even estimate) when tree is too deep
+        if _depth >= MCCFR.MAX_TRAVERSAL_DEPTH:
+            return 0.0
+
         # Terminal state: return utility
         if is_terminal_state(state):
             return float(state.deltas[traversing_player])
@@ -792,7 +799,8 @@ class MCCFR:
                 action_key = self.action_to_key(action, state, active_player)
                 next_state = state.proceed(action)
                 action_values[action_key] = self.external_sampling_with_network(
-                    next_state, traversing_player, network_integrations, collect_deep_cfr_samples
+                    next_state, traversing_player, network_integrations, collect_deep_cfr_samples,
+                    _depth + 1
                 )
                 node_value += strategy[action_key] * action_values[action_key]
 
@@ -834,7 +842,8 @@ class MCCFR:
             # Recurse with sampled action
             next_state = state.proceed(sampled_action)
             return self.external_sampling_with_network(
-                next_state, traversing_player, network_integrations, collect_deep_cfr_samples
+                next_state, traversing_player, network_integrations, collect_deep_cfr_samples,
+                _depth + 1
             )
 
     def set_iteration(self, iteration: int):

@@ -215,6 +215,10 @@ class DeepCFRTrainer:
         if target_regrets:
             # Create mask directly from target_regrets keys
             # An action is legal if it's in target_regrets (which only contains legal actions)
+            #
+            # IMPORTANT: target_regrets comes from MCCFR's instantaneous_regrets, which
+            # are computed ONLY for legal_actions (see mccfr.py line 705: for action in legal_actions)
+            # So target_regrets.keys() correctly identifies all legal actions for this state
             action_keys = set(target_regrets.keys())
 
             mask = []
@@ -226,19 +230,8 @@ class DeepCFRTrainer:
 
             return mask
 
-        # Fallback: if no target_regrets, use heuristic based on street
-        # (This should rarely happen with proper samples)
-        if street == 0:
-            # Preflop is betting - typically facing big blind
-            # [D0, D1, D2, CHECK, CALL, FOLD, 5 raise buckets...]
-            return [0.0, 0.0, 0.0, 0.0, 1.0, 1.0] + [1.0] * 5
-        elif street in (1, 2):  # Discard streets
-            # Discard phase
-            # 11 - 3 = 8 non-discard actions
-            return [1.0, 1.0, 1.0] + [0.0] * 8
         else:
-            # Other streets: default to not facing bet
-            return [0.0, 0.0, 0.0, 1.0, 0.0, 1.0] + [1.0] * 5
+            raise Exception("Legal action masking not working")
 
     def _extract_street(self, infoset: str) -> int:
         """
@@ -396,11 +389,16 @@ class DeepCFRTrainer:
                     # - At training time T, rescale all weights by 2/T
                     # - Effective weight = t' * (2/T)
                     # We only compute loss for LEGAL actions (e.g., no discards on flop/turn/river)
+                    #
+                    # IMPORTANT: Masking zeros out illegal action errors, which ensures:
+                    # 1. Loss is only computed over legal actions
+                    # 2. Gradients don't flow through illegal actions (0 error → 0 gradient)
                     if use_linear_weighting:
                         # Per-sample squared error, masked by legal actions
                         squared_errors = (
-                            predictions - target_batch) ** 2  # [batch, 9]
-                        masked_errors = squared_errors * legal_mask  # Zero out illegal action errors
+                            predictions - target_batch) ** 2  # [batch, 11]
+                        # Zero out illegal action errors (0.0 mask → 0 gradient)
+                        masked_errors = squared_errors * legal_mask
                         per_sample_loss = masked_errors.sum(dim=1)  # [batch]
 
                         # Apply LCFR 2/T rescaling (paper Section 5.3)

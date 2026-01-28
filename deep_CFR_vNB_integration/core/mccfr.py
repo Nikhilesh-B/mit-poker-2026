@@ -274,16 +274,21 @@ class MCCFR:
             else:
                 return 'C'  # Call to end street
 
-        # Check for bets/raises/calls within same street
+        # Check for bets/raises/calls/checks within same street
         if hasattr(current, 'pips') and hasattr(prev, 'pips'):
             if current.pips != prev.pips:
                 # Pips changed within the same street
-                # Determine if it's a call or a bet/raise
+                # Determine if it's a call, bet, or raise
 
-                # A call makes pips equal without increasing the max pip
-                # (the calling player just matches the existing bet)
-                if current.pips[0] == current.pips[1] and max(current.pips) == max(prev.pips):
-                    return 'C'  # Call (pips equalized, max unchanged)
+                # Calculate continue_cost from previous state to determine if we were facing a bet
+                prev_continue_cost = prev.pips[1 -
+                                               (prev.button % 2)] - prev.pips[prev.button % 2]
+
+                # A call makes pips equal when facing a bet (continue_cost > 0)
+                # Call: pips were unequal (facing bet), now equal, max pip unchanged
+                if prev_continue_cost > 0 and current.pips[0] == current.pips[1] and max(current.pips) == max(prev.pips):
+                    # Call (facing bet, pips equalized, max unchanged)
+                    return 'C'
 
                 # A bet/raise increases the max pip
                 bet_amount = max(current.pips) - max(prev.pips)
@@ -298,13 +303,28 @@ class MCCFR:
                     # Use absolute amount bucket
                     return self._absolute_amount_to_char(bet_amount)
                 else:
-                    # Bet amount is 0 or negative - likely a call
-                    return 'C'
+                    # Bet amount is 0 or negative - this shouldn't happen, but if it does,
+                    # check if we were facing a bet to determine call vs check
+                    if prev_continue_cost > 0:
+                        return 'C'  # Call when facing bet
+                    else:
+                        # Check when not facing bet (shouldn't happen if pips changed)
+                        return 'X'
 
         # Check for checks (button advanced but pips didn't change)
+        # This happens when continue_cost == 0 (no bet to call)
         if hasattr(current, 'button') and hasattr(prev, 'button'):
             if current.button != prev.button and current.pips == prev.pips:
-                return 'X'  # Check (button moved, pips same)
+                # Verify we weren't facing a bet
+                prev_continue_cost = prev.pips[1 -
+                                               (prev.button % 2)] - prev.pips[prev.button % 2]
+                if prev_continue_cost == 0:
+                    # Check (button moved, pips same, not facing bet)
+                    return 'X'
+                else:
+                    # This shouldn't happen - if facing bet and pips unchanged, should be a call
+                    # But pips are same, so it's actually a check (maybe all-in situation?)
+                    return 'X'
 
         # Check for fold - this would be in terminal state, but handle just in case
         # Folds are usually detected by going to terminal state, so this is rare
@@ -432,10 +452,44 @@ class MCCFR:
 
         Returns:
             List of concrete action instances
+
+        Note: This method relies on state.legal_actions() which enforces poker rules:
+        - CALL is only legal when continue_cost > 0 (facing a bet)
+        - CHECK is only legal when continue_cost == 0 (not facing a bet)
+        - At discard streets (2, 3): only DISCARD or CHECK are legal
         """
         legal_action_types = state.legal_actions()
         actions = []
         active = state.button % 2
+
+        # Validate that legal_actions() is correctly enforcing poker rules
+        # (This is a sanity check - state.legal_actions() should already enforce these rules)
+        continue_cost = state.pips[1 - active] - state.pips[active]
+
+        # Check if CALL and CHECK are in legal actions using helper functions
+        has_call = any(is_call_action(t) for t in legal_action_types)
+        has_check = any(is_check_action(t) for t in legal_action_types)
+
+        # Verify: CALL and CHECK should never both be legal (except at discard streets where CHECK is special)
+        if has_call and has_check:
+            if state.street in (2, 3):
+                # At discard streets, CALL should never be legal
+                raise ValueError(
+                    f"Invalid legal_actions: CALL should not be legal at discard street {state.street}")
+            else:
+                # At betting streets, both should never be legal
+                raise ValueError(
+                    f"Invalid legal_actions: Both CALL and CHECK legal at street {state.street}, continue_cost={continue_cost}")
+
+        # Verify: CALL should only be legal when facing a bet (continue_cost > 0)
+        if has_call and continue_cost <= 0:
+            raise ValueError(
+                f"Invalid legal_actions: CALL legal but continue_cost={continue_cost} <= 0 at street {state.street}")
+
+        # Verify: CHECK should only be legal when not facing a bet (continue_cost == 0) or at discard streets
+        if has_check and continue_cost > 0 and state.street not in (2, 3):
+            raise ValueError(
+                f"Invalid legal_actions: CHECK legal but continue_cost={continue_cost} > 0 at street {state.street}")
 
         # Check if raises are capped
         raises_capped = self.count_raises_this_round(

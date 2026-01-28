@@ -45,13 +45,14 @@ class NetworkMCCFRIntegration:
         self.is_strategy_network = is_strategy_network
         self.network.eval()  # Set to evaluation mode
 
-    def get_network_regrets(self, state, player: int) -> Dict[str, float]:
+    def get_network_regrets(self, state, player: int, legal_actions: List = None) -> Dict[str, float]:
         """
         Get network-predicted regrets for a state.
 
         Args:
             state: Current RoundState
             player: Player index (0 or 1)
+            legal_actions: Optional pre-computed legal actions list (for performance)
 
         Returns:
             Dictionary mapping action_key -> regret value
@@ -75,7 +76,9 @@ class NetworkMCCFRIntegration:
         )
 
         # Step 5: Apply legal action mask
-        legal_actions = self.mccfr.get_legal_actions_list(state)
+        # Reuse legal_actions if provided to avoid expensive recomputation
+        if legal_actions is None:
+            legal_actions = self.mccfr.get_legal_actions_list(state)
         regret_dict = apply_legal_action_mask(
             regret_dict,
             legal_actions,

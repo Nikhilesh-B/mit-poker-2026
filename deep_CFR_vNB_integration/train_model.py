@@ -13,6 +13,9 @@ Usage:
     python train_model.py --iterations 500 --output deep_cfr_model.pt
 """
 
+from wandb_logger import WandbLogger, WANDB_AVAILABLE
+from training_monitor import TrainingMonitor
+from core.deep_cfr import DeepCFR
 import sys
 import os
 import argparse
@@ -22,10 +25,6 @@ import torch
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
-
-from core.deep_cfr import DeepCFR
-from training_monitor import TrainingMonitor
-from wandb_logger import WandbLogger, WANDB_AVAILABLE
 
 
 def train_model(
@@ -49,7 +48,7 @@ def train_model(
 ):
     """
     Train a Deep CFR model and save it.
-    
+
     Args:
         iterations: Number of Deep CFR iterations
         network_dim: Network hidden dimension
@@ -71,25 +70,26 @@ def train_model(
     """
     # Get project root directory (parent of deep_CFR_vNB_integration)
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    
+
     # Ensure output_path has proper directory (normalize if just filename given)
     if not os.path.dirname(output_path) or not os.path.isabs(output_path):
         # Use project root's output/models directory
-        basename = os.path.basename(output_path) if os.path.dirname(output_path) else output_path
+        basename = os.path.basename(output_path) if os.path.dirname(
+            output_path) else output_path
         output_path = os.path.join(project_root, 'output/models', basename)
     # Ensure .pt extension
     if not output_path.endswith('.pt'):
         output_path = output_path + '.pt'
-    
+
     # Ensure output directory exists
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    
+
     # Initialize training monitor with project root paths
     monitor = TrainingMonitor(
         log_dir=os.path.join(project_root, "output/logs"),
         checkpoint_dir=os.path.join(project_root, "output/checkpoints")
     )
-    
+
     # Create Deep CFR with paper-aligned settings
     deep_cfr = DeepCFR(
         network_dim=network_dim,
@@ -102,10 +102,10 @@ def train_model(
         traversals_per_iter=traversals_per_iter,
         sgd_iterations=sgd_iterations
     )
-    
+
     # Get the actual device being used
     actual_device = deep_cfr.trainers[0].training_device
-    
+
     # Initialize W&B logger if enabled
     wandb_logger = None
     if use_wandb:
@@ -128,10 +128,10 @@ def train_model(
             enabled=True,
             log_weights_every=log_weights_every
         )
-    
+
     # Start training with monitor
     monitor.start_training(iterations)
-    
+
     print(f"Configuration:")
     print(f"  Network dim: {network_dim}")
     print(f"  Batch size: {batch_size}")
@@ -142,12 +142,12 @@ def train_model(
     print(f"  Train every: {train_every} iterations")
     print(f"  Checkpoint every: {checkpoint_every} iterations")
     print()
-    
+
     # Training loop with monitoring
     for i in range(iterations):
         monitor.start_iteration()
         iter_progress = (i + 1) / iterations
-        
+
         # Progress callback for sample collection visualization
         def make_progress_callback(iter_num, iter_total, iter_prog):
             def callback(completed, total, phase):
@@ -160,61 +160,68 @@ def train_model(
                 # Sample collection progress bar
                 sample_prog = completed / total if total > 0 else 0
                 sample_filled = int(bar_width * sample_prog)
-                sample_bar = '▓' * sample_filled + '░' * (bar_width - sample_filled)
+                sample_bar = '▓' * sample_filled + \
+                    '░' * (bar_width - sample_filled)
                 # \033[K clears from cursor to end of line
-                print(f"\rIter {iter_num:4d}/{iter_total} [{iter_bar}] | Samples [{sample_bar}] {completed:4d}/{total}\033[K", end='', flush=True)
+                print(
+                    f"\rIter {iter_num:4d}/{iter_total} [{iter_bar}] | Samples [{sample_bar}] {completed:4d}/{total}\033[K", end='', flush=True)
             return callback
-        
-        progress_cb = make_progress_callback(i + 1, iterations, iter_progress) if verbose else None
-        
+
+        progress_cb = make_progress_callback(
+            i + 1, iterations, iter_progress) if verbose else None
+
         # Run single iteration with progress callback
         result = deep_cfr.run_iteration(progress_callback=progress_cb)
-        
+
         # Log metrics
         if result.get('trained', False):
             if verbose:
                 print()  # Newline before training output
             monitor.log_iteration(i + 1, result, verbose=verbose)
-            
+
             # W&B logging
             if wandb_logger:
                 wandb_logger.log_iteration(i + 1, result)
                 # Log network weights periodically
-                wandb_logger.log_weights(deep_cfr.strategy_network, "strategy", i + 1)
-                wandb_logger.log_weights(deep_cfr.networks[0], "value_p0", i + 1)
-                wandb_logger.log_weights(deep_cfr.networks[1], "value_p1", i + 1)
+                wandb_logger.log_weights(
+                    deep_cfr.strategy_network, "strategy", i + 1)
+                wandb_logger.log_weights(
+                    deep_cfr.networks[0], "value_p0", i + 1)
+                wandb_logger.log_weights(
+                    deep_cfr.networks[1], "value_p1", i + 1)
         else:
             # Log sample collection even on non-training iterations
             if wandb_logger:
                 wandb_logger.log_iteration(i + 1, result)
-            
+
             if verbose:
                 # Clear the line and show completion for non-training iterations
                 new_p0 = result.get('new_samples_p0', 0)
                 new_p1 = result.get('new_samples_p1', 0)
                 traversals = result.get('traversals', 0)
-                print(f"\rIter {i+1:4d}/{iterations} - {traversals} traversals -> {new_p0}/{new_p1} samples (P0/P1)\033[K")
-            
+                print(
+                    f"\rIter {i+1:4d}/{iterations} - {traversals} traversals -> {new_p0}/{new_p1} samples (P0/P1)\033[K")
+
         # Check if this is the best model
         avg_loss = (result.get('loss_p0', 0) + result.get('loss_p1', 0)) / 2
         is_best = avg_loss > 0 and avg_loss < monitor.best_loss
-        
+
         # Save checkpoint with playable model
         if (i + 1) % checkpoint_every == 0:
-            monitor.save_checkpoint(deep_cfr, i + 1, is_best=is_best, 
-                                   output_path=output_path)
-    
+            monitor.save_checkpoint(deep_cfr, i + 1, is_best=is_best,
+                                    output_path=output_path)
+
     # Training complete
     monitor.log_training_complete()
-    
+
     # Finish W&B logging
     if wandb_logger:
         wandb_logger.finish()
-    
+
     # Save final model
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     print(f"\nSaving final model to {output_path}...")
-    
+
     # Save the STRATEGY network (this is what player.py should use)
     model_data = {
         'strategy_network_state_dict': deep_cfr.strategy_network.state_dict(),
@@ -228,14 +235,14 @@ def train_model(
         'training_samples': monitor.get_summary()['total_samples'],
         'history': monitor.history
     }
-    
+
     torch.save(model_data, output_path)
     print(f"✓ Model saved successfully!")
     print(f"  File size: {os.path.getsize(output_path) / 1024 / 1024:.2f} MB")
-    
+
     # Save training history
     monitor.save_history()
-    
+
     # Generate plot if matplotlib available
     try:
         from training_monitor import plot_training_curves
@@ -243,14 +250,15 @@ def train_model(
         plot_training_curves(monitor.history, save_path=plot_path)
     except Exception as e:
         print(f"Could not generate training plot: {e}")
-    
+
     return deep_cfr, model_data
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Train Deep CFR Model (Paper-aligned)')
+    parser = argparse.ArgumentParser(
+        description='Train Deep CFR Model (Paper-aligned)')
     parser.add_argument(
-        '--iterations', type=int, default=500,
+        '--iterations', type=int, default=10,
         help='Number of Deep CFR iterations (default: 500)'
     )
     parser.add_argument(
@@ -262,11 +270,11 @@ def main():
         help='Learning rate (default: 0.001)'
     )
     parser.add_argument(
-        '--batch-size', type=int, default=2000,
+        '--batch-size', type=int, default=10,
         help='Batch size for training (default: 2000, paper HULH uses 20000)'
     )
     parser.add_argument(
-        '--use-network-after', type=int, default=100,
+        '--use-network-after', type=int, default=0,
         help='Start using network after N iterations (default: 100)'
     )
     parser.add_argument(
@@ -295,14 +303,14 @@ def main():
         help='Training device: auto (detect MPS/CUDA), mps (Mac GPU), cuda, or cpu (default: auto)'
     )
     parser.add_argument(
-        '--traversals', type=int, default=1000,
+        '--traversals', type=int, default=3,
         help='Game traversals per CFR iteration (K in paper, default: 1000, paper uses 10000)'
     )
     parser.add_argument(
         '--sgd-steps', type=int, default=4000,
         help='SGD iterations per training session (default: 4000, paper HULH uses 32000)'
     )
-    
+
     # Weights & Biases arguments
     parser.add_argument(
         '--wandb', action='store_true',
@@ -320,9 +328,9 @@ def main():
         '--log-weights-every', type=int, default=10,
         help='Log weight histograms every N iterations (default: 10)'
     )
-    
+
     args = parser.parse_args()
-    
+
     train_model(
         iterations=args.iterations,
         network_dim=args.network_dim,

@@ -171,9 +171,25 @@ class MCCFR:
         street = state.street
 
         # Extract action history - supports both training and live play states
+        # CRITICAL FIX: Add cycle detection to prevent infinite loops
         history = []
         current = state
-        while current.previous_state is not None:
+        visited = set()  # Track visited states to detect cycles
+        max_depth = 1000  # Safety limit for history reconstruction
+
+        depth = 0
+        while current.previous_state is not None and depth < max_depth:
+            # Cycle detection: if we've seen this state before, we have a cycle
+            state_id = id(current)
+            if state_id in visited:
+                raise RuntimeError(
+                    f"Cycle detected in previous_state chain at depth {depth}! "
+                    f"This indicates a bug in state.proceed() or state construction. "
+                    f"State: street={current.street}, button={current.button}, "
+                    f"pips={current.pips}"
+                )
+            visited.add(state_id)
+
             prev = current.previous_state
 
             # Method 1: Use action_taken if available (training with custom_engine)
@@ -197,6 +213,8 @@ class MCCFR:
                         _, max_raise = prev.raise_bounds()
                         if bet_amount >= max_raise or bet_amount >= 250:
                             history.append('Z')  # RAISE_ALL_IN
+                            current = prev
+                            depth += 1
                             continue
 
                     # Map to absolute amount bucket character
@@ -209,6 +227,13 @@ class MCCFR:
                     history.append(action_key)
 
             current = prev
+            depth += 1
+
+        if depth >= max_depth:
+            raise RuntimeError(
+                f"History reconstruction exceeded max_depth={max_depth}. "
+                f"This suggests an extremely deep game tree or a bug."
+            )
 
         # Reverse to get chronological order
         history.reverse()
@@ -774,14 +799,14 @@ class MCCFR:
         Returns:
             Utility value for traversing player at this node
         """
+        # Terminal state: return utility (check early to avoid accessing non-existent attributes)
+        if is_terminal_state(state):
+            return float(state.deltas[traversing_player])
+
         # Depth limit: truncate extremely deep game trees
         # Return 0 (break-even estimate) when tree is too deep
         if _depth >= MCCFR.MAX_TRAVERSAL_DEPTH:
             return 0.0
-
-        # Terminal state: return utility
-        if is_terminal_state(state):
-            return float(state.deltas[traversing_player])
 
         # Get information set
         active_player = state.button % 2
@@ -801,8 +826,9 @@ class MCCFR:
         # KEY DIFFERENCE: Use NETWORK to predict regrets, not cumulative table!
         # Paper Algorithm 2: "Compute strategy σt(I) from predicted advantages V(I(h), a|θp)"
         network_integration = network_integrations[active_player]
+        # Pass precomputed legal_actions to avoid redundant expensive recomputation
         predicted_regrets = network_integration.get_network_regrets(
-            state, active_player)
+            state, active_player, legal_actions=legal_actions)
 
         # Get strategy via regret matching on network predictions
         strategy = self.regret_matching(
@@ -822,6 +848,32 @@ class MCCFR:
             for action in legal_actions:
                 action_key = self.action_to_key(action, state, active_player)
                 next_state = state.proceed(action)
+
+                # CRITICAL FIX: Check if proceed() actually advanced the game
+                if id(next_state) == id(state):
+                    raise RuntimeError(
+                        f"proceed() returned the same object (no progress)! "
+                        f"Action: {action_key}, depth: {_depth}, street: {state.street}"
+                    )
+
+                # Check for progress signature (street, button, pips, stacks, board)
+                # Skip check for terminal states (they don't have these attributes)
+                if not is_terminal_state(next_state):
+                    progress_sig = (
+                        state.street, state.button % 2, tuple(state.pips),
+                        tuple(state.stacks), len(state.board) if hasattr(
+                            state, 'board') else 0
+                    )
+                    next_sig = (
+                        next_state.street, next_state.button % 2, tuple(
+                            next_state.pips),
+                        tuple(next_state.stacks), len(next_state.board) if hasattr(
+                            next_state, 'board') else 0
+                    )
+
+                    # Note: Identical signature might indicate a bug, but we don't raise
+                    # an error here as it could be valid in some edge cases
+
                 action_values[action_key] = self.external_sampling_with_network(
                     next_state, traversing_player, network_integrations, collect_deep_cfr_samples,
                     _depth + 1
@@ -865,6 +917,14 @@ class MCCFR:
 
             # Recurse with sampled action
             next_state = state.proceed(sampled_action)
+
+            # CRITICAL FIX: Check if proceed() actually advanced the game
+            if id(next_state) == id(state):
+                raise RuntimeError(
+                    f"proceed() returned the same object (no progress)! "
+                    f"Action: sampled, depth: {_depth}, street: {state.street}"
+                )
+
             return self.external_sampling_with_network(
                 next_state, traversing_player, network_integrations, collect_deep_cfr_samples,
                 _depth + 1

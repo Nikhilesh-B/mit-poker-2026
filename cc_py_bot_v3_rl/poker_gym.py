@@ -6,29 +6,51 @@ import sys, os
 sys.path.append(os.getcwd())
 
 import numpy as np
+import json
+
 from statistics import mean, stdev, StatisticsError
 from itertools import chain
 
-import gymnasium as gym
-from gymnasium.spaces import Box, MultiDiscrete, Dict
-
 import engine_rl as Engine
-from engine_rl import FoldAction, CallAction, CheckAction, \
-RaiseAction, DiscardAction, TerminalState, GameState, RoundState
+import player_rl as TrainingBots
+
+from skeleton.actions import FoldAction, CallAction, CheckAction, \
+DiscardAction, RaiseAction
+from skeleton.states import RoundState, GameState, TerminalState
 
 import pkrbot
 import poker_utils_rl
 from poker_utils_rl import RANK_MAP, SUIT_MAP
 
-from player_rl import PlayerSkeleton, PlayerCeylan_v1, PlayerHenry_v1
+import gymnasium as gym
+from gymnasium.spaces import Box, MultiDiscrete, Dict, Discrete
+
+import warnings
+warnings.simplefilter('ignore')
+
+# %% Variables
 
 NUM_ROUNDS = 1000
 STARTING_STACK = 400
 BIG_BLIND = 2
 SMALL_BLIND = 1
 
-import warnings
-warnings.simplefilter('ignore')
+RAISE_POT_MULTI = [0.4, 0.8, 1.2]
+ROUND_REWARD_SCALER = 0.05
+GAME_OVER_REWARD_SCALER = 5
+
+def keystoint(x):
+    return {int(k): v for k, v in x.items()}
+def valstoint(x):
+    return {k: int(v) for k, v in x.items()}
+
+with open('cards_decode.json', 'r') as f:
+    CARDS_FROM_INT = json.load(f, object_hook=keystoint)
+
+with open('cards_encode.json', 'r') as f:
+    INT_FROM_CARDS = json.load(f, object_hook=valstoint)
+
+del f
 
 
 # %% Gym Environment
@@ -37,146 +59,93 @@ class TossHold(gym.Env):
     metadata = {'render_modes': ['human']}
     
     def __init__(self):
-        self.start_stack = STARTING_STACK
-        self.tot_rounds = NUM_ROUNDS
-        
-        self.render_mode = 'human'
-        
-        self.last_action = None
-        
-        self.game_no = 0
-        self.reset()
-        
-        # Discrete Observation:
-            # BB/SB [0:1]
-            # Street [0:6]
-            # Hole Card 1 [2:14, 1:4] # 0 if doesn't exist
-            # Hole Card 2
-            # Hole Card 3
-            # Flop Card 1
-            # Flop Card 2
-            # Discarded Card 1
-            # Discarded Card 2
-            # Turn Card
-            # River Card
-            # Hand Encodings 9*[0:2]
-            # Legal Moves: Fold, Check, Call, Raise, Discard 5*[0, 1]
         # Continous Observation:
-            # My Current Stack [0:400] / 400
-            # Pot Stack [0:800] / 400
-            # Current Round [0:1000] / 1000
-            # Rolling Sum of Money Earned [-1000*400:1000*400] / 400
-            # Raise Bounds, -1 if illegal. +1 for All-in.
 # TODO:     # Hand Eval: From 'pkrbot'
 # TODO:     # Win Probability
 # TODO:     # Pot Odds
-            
-        # XXX: I guess instead of Dict, we can use one Single Box ?
-        # Or maybe not? How critical is it to have int/float seperation?
+
+        self.henry_rank_map = {
+            "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9,
+            "T": 10, "J": 11, "Q": 12, "K": 13, "A": 14}
+
+        self.Game = Engine.PokerGame()
+        
         self.observation_space = Dict({
             'Discrete_Obs': MultiDiscrete(nvec=[
-                2, 7, 
-                15, 5, 15, 5, 15, 5, 
-                15, 5, 15, 5, 
-                15, 5, 15, 5,
-                15, 5, 
-                15, 5, 
-                3, 3, 3, 3, 3, 3, 3, 3, 
-                2, 2, 2, 2, 2], 
+                2, 7, # SB/BB, Street
+                15, 5, 15, 5, 15, 5, # Hole Cards
+                15, 5, 15, 5, # Flop
+                15, 5, 15, 5, # Discards
+                15, 5, 15, 5, # Turn, River
+                2, 2, 2, 2, # Legal Moves - Fold, Check, Call, Raise
+                3, 3, 3, 3, 3, 3, 3, 3], # Hand Encoding
                 dtype=np.int16),
             'Continuous_Obs': Box(
-                low=np.array( [0.0, 0.0, 0.0, -1.0, -1.0]),
-                high=np.array([1.0, 2.0, 1.0,  1.0,  1.0]), 
+                # My Current Stack [0:400] / 400
+                # Pot Stack [0:800] / 400
+                # Current Round [0:1000] / 1000
+                # Rolling Sum of Money Earned [-1000*400:1000*400] / 400
+                low=np.array( [0.0, 0.0, 0.0, -1.0]),
+                high=np.array([1.0, 2.0, 1.0,  1.0]), 
                 dtype=np.float32)
             })
         
+        # {0: Fold, 1: Check, 2: Call, 
+        #  3: Raise 0.4*Pot, 4: Raise 0.8*Pot, 
+        #  5: Raise 1.2*Pot, 6: All-In}
+        self.action_space = Discrete(7)
         
-        # First Number is Fold, Check, Call, Raise, Discard
-        # Second Number - if raise 1-10 between min/max raise bound.
-        # Third Number is Discard Card Index
-        self.action_space = MultiDiscrete(nvec=[5, 10, 3], dtype=np.int16)
+        self.do_i_render_at_step = False
     
     def _get_obs(self):
-        round_state = self.Game.current_round_state
+        # ---- Discrete Observation ----
+        discrete_obs = []
         
-        # Handle TerminalState, shouldn't happen but I guess it does.
-        state_name = type(round_state).__name__
-        if state_name == 'TerminalState':
-            discrete_obs = [0]*33
-            cont_obs = [0.0]*5
-            
+        # SB/BB
+        if self.Game.sb == 'rl':
+            discrete_obs.append(0)
         else:
-            # ---- Discrete Observation ----
-            discrete_obs = []
-            
-            # SB/BB, Street
-            discrete_obs.append(self.rl_pos)
-            discrete_obs.append(round_state.street)
-            
-            # Update Card Info
-            self.get_visible_cards_info()
-            
-            # Flatten Cards
-            hole_flat = list(chain.from_iterable(self.hole_cards))
-            board_flat = list(chain.from_iterable(self.board_cards))
-            discrete_obs += hole_flat
-            discrete_obs += board_flat
-            
-            # Hand Encodings
-            hand_enc = poker_utils_rl.evaluate_poker_hands_list(
-                self.hole_cards_mini, self.board_cards_mini)
-            discrete_obs += hand_enc
-            
-            # Legal Moves
-            moves = round_state.legal_actions()
-            # if/else in order
-            if FoldAction in moves:
-                discrete_obs.append(1)
-            else:
-                discrete_obs.append(0)
-            if CheckAction in moves:
-                discrete_obs.append(1)
-            else:
-                discrete_obs.append(0)
-            if CallAction in moves:
-                discrete_obs.append(1)
-            else:
-                discrete_obs.append(0)
-            if RaiseAction in moves:
-                discrete_obs.append(1)
-            else:
-                discrete_obs.append(0)
-            if DiscardAction in moves:
-                discrete_obs.append(1)
-            else:
-                discrete_obs.append(0)
-            
-            # ---- Continuous Observation ----
-            cont_obs = []
-            
-            # My Stack
-            my_stack = round_state.stacks[self.rl_pos] / STARTING_STACK
-            cont_obs.append(my_stack)
-            
-            # Pot 
-            pot = sum(round_state.pips) / (2 * STARTING_STACK)
-            cont_obs.append(pot)
-            
-            # Current Round
-            curr_round = self.Game.current_round / NUM_ROUNDS
-            cont_obs.append(curr_round)
-            
-            # Total Bankroll
-            tot_bankroll = self.Game.P2_bankroll / STARTING_STACK
-            cont_obs.append(tot_bankroll)
-            
-            # Raise Bounds
-            if RaiseAction not in moves:
-                r_bound = -1
-            else:
-                min_b, max_b = round_state.raise_bounds()
-                r_bound = max_b/STARTING_STACK
-            cont_obs.append(r_bound)
+            discrete_obs.append(1)
+        
+        # Street
+        discrete_obs.append(self.Game.round_street)
+        
+        # Cards
+        hole_flat, board_flat = self.get_visible_cards_encoding()
+        discrete_obs += hole_flat
+        discrete_obs += board_flat
+        
+        # Legal Moves
+        legal_moves_enc = self.get_legal_moves_encoding()
+        discrete_obs += legal_moves_enc
+        
+        # Hand Encodings
+        hand_enc = poker_utils_rl.evaluate_poker_hands_list(
+            self.Game.rl_cards, self.Game.board)
+        # Clip size, shouldn't have impact.
+        if len(hand_enc) > 8:
+            print(f'Wrong Hand Encoding: {hand_enc}')
+            hand_enc = hand_enc[:8]
+        discrete_obs += hand_enc
+        
+        # ---- Continuous Observation ----
+        cont_obs = []
+        
+        # My Stack
+        my_stack = self.Game.rl_stack / STARTING_STACK
+        cont_obs.append(my_stack)
+        
+        # Pot 
+        pot = self.Game.pot / (2 * STARTING_STACK)
+        cont_obs.append(pot)
+        
+        # Current Round
+        curr_round = self.Game.round_no / NUM_ROUNDS
+        cont_obs.append(curr_round)
+        
+        # Total Bankroll
+        tot_bankroll = self.Game.rl_bankroll / (STARTING_STACK*NUM_ROUNDS)
+        cont_obs.append(tot_bankroll)
         
         # ---- Combine ----
         combined_obs = {'Discrete_Obs': np.array(discrete_obs, 
@@ -185,240 +154,265 @@ class TossHold(gym.Env):
                                                    dtype=np.float32)}
         
         return combined_obs
-        
     
     def _get_info(self):
-        info_ = {'current_round': self.Game.current_round, 
-                 'current_bankroll': self.Game.P2_bankroll, 
-                 'hole_cards': self.hole_cards, 
-                 'board_cards': self.board_cards}
+        info_ = {'current_round': self.Game.round_no, 
+                 'current_bankroll': self.Game.rl_bankroll, 
+                 'hole_cards': self.Game.rl_cards, 
+                 'board_cards': self.Game.board}
         
         return info_
     
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         
-        self.game_no += 1
-        self.bankroll = [0]
-        
-        print(f'\nGame No: {self.game_no}')
-        
-        # if self.game_no < 75:
-        #     print('Opponent is Skelly.')
-        #     self.Game = Engine.Game(PlayerSkeleton())
-        # if self.game_no < 125:
-        #     print('Opponent is Ceylan.')
-        #     self.Game = Engine.Game(PlayerCeylan_v1())
-        # else:
-        #     print('Opponent is Henry.')
-        #     self.Game = Engine.Game(PlayerHenry_v1())
-            
-        print('Opponent is Skelly.')
-        self.Game = Engine.Game(PlayerSkeleton())
-        
-        self.start_new_round()
+        self.Game.start_game()
+        self.Game.start_round()
         
         observation = self._get_obs()
         info = self._get_info()
 
         return observation, info
     
-    def start_new_round(self):
-        # Handle multiple round starts.
-        while True:
-            self.Game.start_new_round()
-            # 0 is SB, 1 is BB.
-            self.rl_pos = 0 if self.Game.sb == 'rl' else 1
-            self.get_visible_cards_info()
-            
-            # Run until RL's turn or Game Over.
-            while True:
-                game_move_code = self.Game.move_game_forward()
-                
-                # RL Turn, Exit Function
-                if game_move_code == 1:
-                    return
-                
-                # Opponent Folded
-                elif game_move_code == -1:
-                    self.Game.end_round(self.Game.current_round_state)
-                    self.bankroll.append(self.Game.P2_bankroll)
-                    # Game Over
-                    if self.Game.check_game_over():
-                        return
-                    # Return to Outer Loop to Start a New Round
-                    break
-    
     def card_mapper(self, cards):
         mapped_cards = []
         for card in list(cards): 
-            rank = RANK_MAP[card.__str__()[0]]
-            suit = SUIT_MAP[card.__str__()[1]]
+            rank = RANK_MAP[card[0]]
+            suit = SUIT_MAP[card[1]]
             mapped_cards.append([rank, suit])
         return mapped_cards
     
-    def get_visible_cards_info(self):
-        round_state = self.Game.current_round_state
+    def get_visible_cards_encoding(self):
+        rl_cards = self.Game.rl_cards
+        board = self.Game.board
         
-        # This won't work if round_state is TerminalState.
-        try:
-            # ALWAYS pull fresh from the engine state
-            raw_hole = round_state.hands[self.rl_pos]
-            raw_board = round_state.board
+        hole_cards_enc = self.card_mapper(rl_cards)
+        board_cards_enc = self.card_mapper(board)
+        
+        # Padding
+        while len(hole_cards_enc) < 3:
+            hole_cards_enc.append([0, 0])
+        while len(board_cards_enc) < 6:
+            board_cards_enc.append([0, 0])
             
-            # Map them into new lists
-            self.hole_cards = self.card_mapper(raw_hole)
-            self.board_cards = self.card_mapper(raw_board)
+        # Flatten
+        hole_cards_enc = list(chain.from_iterable(hole_cards_enc))
+        board_cards_enc = list(chain.from_iterable(board_cards_enc))
         
-        except Exception as e:
-            print(f'get_visible_cards_info() Exception: {e}')
-            print('Defaulting to empty card observations.')
-            
-            self.hole_cards = []
-            self.board_cards = []
+        return hole_cards_enc, board_cards_enc
+    
+    def get_legal_moves_encoding(self):
+        if self.Game.sb == 'rl':
+            player_active = 0
+        else:
+            player_active = 1
         
-        # Create the 'mini' (unpadded) versions for the evaluator
-        self.hole_cards_mini = [list(c) for c in self.hole_cards]
-        self.board_cards_mini = [list(c) for c in self.board_cards]
+        rs = self.Game.encode_round_state(player_active)
+        legals = rs.legal_actions()
+        allowed_actions = [x.__name__ for x in legals]
         
-        # Pad the main observation lists
-        while len(self.hole_cards) < 3:
-            self.hole_cards.append([0, 0])
-        while len(self.board_cards) < 6:
-            self.board_cards.append([0, 0])
+        fold_ = 1 if 'FoldAction' in allowed_actions else 0
+        check_ = 1 if 'CheckAction' in allowed_actions else 0
+        call_ = 1 if 'CallAction' in allowed_actions else 0
+        raise_ = 1 if 'RaiseAction' in allowed_actions else 0
+        legals_enc = [fold_, check_, call_, raise_]
+        
+        return legals_enc
+    
+    def handle_discard_action(self):
+        # XXX: Copying PlayerHenry_v1 logic.
+        my_cards = self.Game.rl_cards
+        board_cards = self.Game.board
+        
+        hand_ranks = [self.henry_rank_map[c[0]] for c in my_cards]
+        hand_suits = [c[1] for c in my_cards]
+        board_ranks = [self.henry_rank_map[c[0]] for c in board_cards]
+        board_suits = [c[1] for c in board_cards]
+
+        keep_values = []
+        
+        for i in range(3):
+            val = 0.0
+            r = hand_ranks[i]
+            s = hand_suits[i]
+
+            # Pair Bonus
+            pair_count = hand_ranks.count(r)
+            if pair_count == 2:
+                val += 12.0
+            elif pair_count == 3:
+                val += 15.0
+
+            # Board Pair Synergy
+            board_pair_count = board_ranks.count(r)
+            if board_pair_count >= 2:
+                val += 10.0
+            elif board_pair_count == 1:
+                val += 4.0
+
+            # Flush Potential
+            my_suit_count = hand_suits.count(s)
+            board_suit_count = board_suits.count(s)
+            total_suit = my_suit_count + board_suit_count
+            if total_suit >= 4:
+                val += 8.0
+            elif total_suit == 3:
+                val += 4.0
+
+            # Straight Potential
+            all_ranks = hand_ranks + board_ranks
+            if r == 14:
+                all_ranks.append(1)
+            unique_ranks = sorted(set(all_ranks))
+            max_straight_draw = 0
+            for base in unique_ranks:
+                window = [x for x in unique_ranks if base <= x < base + 5]
+                max_straight_draw = max(max_straight_draw, len(window))
+            if max_straight_draw >= 4:
+                contributes = False
+                for base in unique_ranks:
+                    if base <= r < base + 5:
+                        contributes = True
+                        break
+                if r == 14 and (1 in unique_ranks or 2 in unique_ranks):
+                    contributes = True
+                if contributes:
+                    val += 6.0
+
+            # High Card Value
+            if r == 14:
+                val += 5.0
+            elif r >= 12:
+                val += 3.0
+            elif r >= 10:
+                val += 1.5
+
+            keep_values.append(val)
+
+        discard_idx = keep_values.index(min(keep_values))
+        
+        return DiscardAction(discard_idx)
     
     def decode_action(self, rl_action):
-        fccrd = rl_action[0]
-        raise_multi = rl_action[1]
-        discard_idx = rl_action[2]
+        pot = self.Game.pot
+        r1, r2, r3 = RAISE_POT_MULTI[0]*pot, RAISE_POT_MULTI[
+            1]*pot, RAISE_POT_MULTI[2]*pot
+        rl_pip = self.Game.rl_pips
         
-        if fccrd == 0:
+        # XXX: For RaiseAction ?
+        # The value that goes into the RaiseAction is how much 
+        # in total we put into the pot.
+        # So, amt would be pips + rX ? 
+        
+        if rl_action == 0:
             return FoldAction()
-        elif fccrd == 1:
+        elif rl_action == 1:
             return CheckAction()
-        elif fccrd == 2:
+        elif rl_action == 2:
             return CallAction()
-        elif fccrd == 3:
-            min_raise, max_raise = self.Game.current_round_state.raise_bounds()
-            raise_amt = min_raise + (raise_multi/9)*(max_raise - min_raise)
-            return RaiseAction(round(raise_amt))
+        elif rl_action == 3:
+            amt = round(rl_pip + r1)
+            return RaiseAction(amt)
+        elif rl_action == 4:
+            amt = round(rl_pip + r2)
+            return RaiseAction(amt)
+        elif rl_action == 5:
+            amt = round(rl_pip + r3)
+            return RaiseAction(amt)
+        # All-In
         else:
-            return DiscardAction(discard_idx)
+            return RaiseAction(STARTING_STACK)
         
-    
     def step(self, action):
         # Default
         reward = 0.0
         
-        # RL performs an action, then the opponent performs an action.
-        # Observation comes after opponent's action is completed.
+        # If terminated, it will call self.reset() automatically.
+        # game_over = terminated
+        terminated, truncated = False, False
         
-        # For some reason, the Game is Over befor we can step.
-        if self.Game.check_game_over():
-            terminated, truncated = True, False
-            observation = self._get_obs()
-            info = self._get_info()
-            
-            try:
-                sharpe = mean(self.bankroll)/stdev(self.bankroll)
-            except ZeroDivisionError:
-                sharpe = 0
-            if self.bankroll[-1] > 0:
-                reward += np.clip(10*sharpe, 0, 20)
+        opp_fold, rl_fold = False, False
+        
+        obs_prev = self._get_obs()
+        info_prev = self._get_info()
+        
+        
+        # Handle Discard - Assuming Opponent is logical.
+        # XXX: Maybe we can stack Streets 2 and 3 with one if?
+        if self.Game.round_street == 2:
+            # BB Discards, SB Checks
+            if self.Game.sb == 'oppo':
+                discard_rl = self.handle_discard_action()
+                self.Game.process_rl_move(discard_rl)
+                self.Game.process_oppo_move()
             else:
-                reward += -10
-            
-            return observation, 0.0, terminated, truncated, info
-        
-        
-        legal_actions_this_turn = self.Game.current_round_state.legal_actions()
-        rl_agent_action = self.decode_action(action)
-        
-        self.last_action = rl_agent_action
-        
-        # Illegal Action, Gets Negative Reward
-        # Act like engine: Check if possible, Fold otherwise
-        if type(rl_agent_action) not in legal_actions_this_turn:
-            if CheckAction in legal_actions_this_turn:
-                self.Game.process_rl_train_action(CheckAction())
+                self.Game.process_oppo_move()
+                self.Game.process_rl_move(CheckAction())
+        if self.Game.round_street == 3:
+            # SB Discards, BB Checks
+            if self.Game.sb == 'oppo':
+                self.Game.process_oppo_move()
+                self.Game.process_rl_move(CheckAction())
             else:
-                self.Game.process_rl_train_action(FoldAction())
-            reward += -1.0
-        else:
-            self.Game.process_rl_train_action(rl_agent_action)
+                discard_rl = self.handle_discard_action()
+                self.Game.process_rl_move(discard_rl)
+                self.Game.process_oppo_move()
             
-            # Punish excessive raises.
-            if action[1]/9 > 0.5:
-                reward += -0.1
-        
-        
-        # While not our turn, progress game forward.
-        while True:
-            game_move_code = self.Game.move_game_forward()
+        # Opponent plays.
+        while not self.Game.is_rl_turn():
+            round_end, opp_fold = self.Game.process_oppo_move()
             
-            # RL Agent's Turn
-            if game_move_code == 1:
-                break
-            
-            # Round Over
-            elif game_move_code == -1:
-                # Update bankroll, get reward.
-                self.Game.end_round(self.Game.current_round_state)
-                self.bankroll.append(self.Game.P2_bankroll)
-                # Reward is change in bankroll, scaled by starting stack.
-                cash_delta_scaled = (self.bankroll[-1] - self.bankroll[-2]
-                                     )/STARTING_STACK
-                reward += np.cbrt(cash_delta_scaled)
+            # XXX: Should I start a new round here?
+            if round_end:
+                terminated = self.Game.end_round(opp_fold, rl_fold)
+                reward += np.cbrt(self.Game.rl_bankroll_diff[-1]
+                                  )*ROUND_REWARD_SCALER
                 
-                # Start new round.
-                self.start_new_round()
-                break
-        
-        self.get_visible_cards_info()
-        
-        # Game end at 1000 rounds.
-        if self.Game.check_game_over():
-            terminated = True
-        else:
-            terminated = False
-
-        # Might have the timer here.
-        truncated = False
-        
-        
-        # The game result after actual 1000 rounds is the most important
-        # part for us. And as long as it's greater than 0, we win.
-        # Should still need to scale by 'win consistency' etc.
-        # which we'll be using Sharpe Ratio.
-        if terminated:
-            if len(self.bankroll) > 1:
-                try:
-                    std = stdev(self.bankroll)
-                    if std > 0:
-                        sharpe = mean(self.bankroll) / std
+                if terminated:
+                    mean_win, std_win, sharpe = self.Game.end_game()
+                    if mean_win < 0:
+                        reward += -10
                     else:
-                        sharpe = 0
-                except (ZeroDivisionError, StatisticsError):
-                    sharpe = 0
-            else:
-                sharpe = 0
+                        reward += sharpe*GAME_OVER_REWARD_SCALER
+                else:
+                    self.Game.start_round()
+        
+        # RL's Turn
+        if not terminated:
+            # Here, process rl_action.
+            rl_action_decoded = self.decode_action(action)
+            round_end, rl_fold = self.Game.process_rl_move(rl_action_decoded)
             
-            if self.bankroll[-1] > 0:
-                reward += np.clip(10*sharpe, 0, 20)
-            else:
-                reward += -10
+            # XXX: Should I start a new round here?
+            if round_end:
+                terminated = self.Game.end_round(opp_fold, rl_fold)
+                reward += np.cbrt(self.Game.rl_bankroll_diff[-1]
+                                  )*ROUND_REWARD_SCALER
+                
+                if terminated:
+                    mean_win, std_win, sharpe = self.Game.end_game()
+                    if mean_win < 0:
+                        reward += -10
+                    else:
+                        reward += sharpe*GAME_OVER_REWARD_SCALER
+                else:
+                    self.Game.start_round()
         
         # Return the next agent observation.
-        observation = self._get_obs()
-        info = self._get_info()
+        if terminated or truncated:
+            observation = obs_prev
+            info = info_prev
+        else:
+            observation = self._get_obs()
+            info = self._get_info()
         
-        # self.render()
+        if self.do_i_render_at_step:
+            self.render()
 
         return observation, reward, terminated, truncated, info
     
     def render(self):
-        print('\nLast Action:', self.last_action)
-        print('Round State:', self.Game.current_round_state)
+        pass
         
     def close(self):
         pass

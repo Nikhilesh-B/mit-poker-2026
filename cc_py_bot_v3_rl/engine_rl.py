@@ -4,8 +4,6 @@
 
 # %% Import Libraries
 
-
-
 import numpy as np
 import time
 _seed = int(time.time())
@@ -14,7 +12,6 @@ print(f'Engine np.random Seed: {_seed}\n')
 
 import pkrbot
 
-import math
 from statistics import mean, stdev
 import json
 
@@ -25,12 +22,14 @@ from skeleton.actions import FoldAction, CallAction, CheckAction, \
 DiscardAction, RaiseAction
 from skeleton.states import RoundState, GameState, TerminalState
 
-from player_rl import PlayerSkeleton, PlayerCeylan_v1, PlayerHenry_v1
+import player_rl as TrainingBots
 
 
 # %% Variables
 
-NUM_ROUNDS = 25 # 1000
+_DEBUG_PRINT = False
+
+NUM_ROUNDS = 1000
 STARTING_STACK = 400
 BIG_BLIND = 2
 SMALL_BLIND = 1
@@ -47,14 +46,19 @@ with open('cards_decode.json', 'r') as f:
 with open('cards_encode.json', 'r') as f:
     INT_FROM_CARDS = json.load(f, object_hook=valstoint)
 
-# Bot Class
-OPPONENT1 = PlayerSkeleton()
-OPPONENT2 = PlayerCeylan_v1()
-OPPONENT3 = PlayerHenry_v1()
-
-OPPONENT = OPPONENT3
-
 del f
+
+# %% Opponents
+
+# Bot Class Options
+OPPONENT1 = TrainingBots.PlayerSkeleton()
+OPPONENT2 = TrainingBots.PlayerCeylan_v1()
+OPPONENT3 = TrainingBots.PlayerHenry_v1()
+OPPONENT4 = TrainingBots.PlayerHenry_v2()
+OPPONENT5 = TrainingBots.MyRLBot_v0()
+
+OPPONENT = TrainingBots.PlayerHenry_v1()
+
 
 # %% Custom Game Engine
 
@@ -138,8 +142,9 @@ class PokerGame():
         action_opp_legal = self.handle_action(rs_opp, action_opp, 'oppo')
         action_name = type(action_opp_legal).__name__
         
-        print('Action Oppo:', action_opp)
-        print('Action Oppo Legal:', action_opp_legal)
+        if _DEBUG_PRINT:
+            print('Action Oppo:', action_opp)
+            print('Action Oppo Legal:', action_opp_legal)
         
         round_end, oppo_fold = False, False
         
@@ -279,8 +284,9 @@ class PokerGame():
         action_rl_legal = self.handle_action(rs_rl, rl_action, 'rl')
         action_name = type(action_rl_legal).__name__
         
-        print('Action RL:', rl_action)
-        print('Action RL Legal:', action_rl_legal)
+        if _DEBUG_PRINT:
+            print('Action RL:', rl_action)
+            print('Action RL Legal:', action_rl_legal)
         
         round_end, rl_fold = False, False
         
@@ -497,10 +503,11 @@ class PokerGame():
         ts_opp = TerminalState(deltas, previous_state)
         gs_opp = self.encode_game_state('oppo')
         
-        print()
-        print(self.rl_pips, self.oppo_pips)
-        print(f'PnL RL: {rl_delta} - PnL Oppo: {opp_delta}')
-        print('--------------------------\n')
+        if _DEBUG_PRINT:
+            print()
+            print(self.rl_pips, self.oppo_pips)
+            print(f'PnL RL: {rl_delta} - PnL Oppo: {opp_delta}')
+            print('\n--------------------\n')
         
         try:
             self.Opp.handle_round_over(gs_opp, ts_opp, oppo_active)
@@ -581,6 +588,7 @@ class PokerGame():
             self.start_round()
             
         return game_over, mean_win, std_win, sharpe
+    
 
 
 # %% Main for Test
@@ -591,20 +599,21 @@ if __name__ == '__main__':
     Game.start_round()
     
     game_over = False
-    test_bot = PlayerSkeleton()
+    test_bot = TrainingBots.PlayerSkeleton()
     
     while not game_over:
-        print()
-        print(Game.round_no, Game.round_street)
-        print(Game.opp_cards, Game.rl_cards, Game.board)
-        print(Game.sb)
-        print(Game.rl_pips, Game.oppo_pips)
-        print(Game.rl_stack, Game.oppo_stack) # !!! Wrong updates.
-        print(Game.pot)
-        rs = Game.encode_round_state(Game.player_turn)
-        la = rs.legal_actions()
-        print(la)
-        print(rs.raise_bounds())
+        if _DEBUG_PRINT:
+            print()
+            print(Game.round_no, Game.round_street)
+            print(Game.opp_cards, Game.rl_cards, Game.board)
+            print(Game.sb)
+            print(Game.rl_pips, Game.oppo_pips)
+            print(Game.rl_stack, Game.oppo_stack)
+            print(Game.pot)
+            rs = Game.encode_round_state(Game.player_turn)
+            la = rs.legal_actions()
+            print(la)
+            print(rs.raise_bounds())
         
         
         # rs = Game.encode_round_state(Game.player_turn)
